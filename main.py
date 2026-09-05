@@ -19,12 +19,20 @@ def print_groups(title, groups, analyzer):
         extra = ""
         if "mean_pulse_width_s" in group:
             mean_pw_us = group["mean_pulse_width_s"] * 1e6
+            mean_amp_dbfs = group["mean_amplitude_dbfs"]
+            modulation = group["dominant_modulation"]
             estimated_pri_s = group.get("estimated_pri_s")
-            if estimated_pri_s is None:
-                pri_text = "unknown"
-            else:
-                pri_text = f"{estimated_pri_s * 1e6:.3f} us"
-            extra = f", mean PW={mean_pw_us:.3f} us, estimated PRI={pri_text}"
+            pri_text = (
+                "unknown"
+                if estimated_pri_s is None
+                else f"{estimated_pri_s * 1e6:.3f} us"
+            )
+            extra = (
+                f", mean PW={mean_pw_us:.3f} us"
+                f", mean AMP={mean_amp_dbfs:.2f} dBFS"
+                f", modulation={modulation}"
+                f", estimated PRI={pri_text}"
+            )
 
         print(
             f"Candidate {candidate_id}: "
@@ -36,15 +44,14 @@ def print_groups(title, groups, analyzer):
         for item in sequence:
             pdw = item["pdw"]
             pri_s = item["pri_s"]
-
-            if pri_s is None:
-                pri_text = "--------"
-            else:
-                pri_text = f"{pri_s * 1e6:8.3f} us"
+            pri_text = "--------" if pri_s is None else f"{pri_s * 1e6:8.3f} us"
 
             print(
                 f"  PDW {pdw.pdw_id:06d}  "
                 f"PW={pdw.pulse_width_s * 1e6:6.3f} us  "
+                f"AMP={pdw.amplitude_dbfs:6.2f} dBFS  "
+                f"MOD={pdw.modulation_type:3s}  "
+                f"BW={pdw.modulation_bandwidth_hz / 1e6:5.3f} MHz  "
                 f"PRI={pri_text}"
             )
 
@@ -52,7 +59,6 @@ def print_groups(title, groups, analyzer):
 
 
 def main():
-
     source = SimulatedSource(
         sample_rate_hz=SAMPLE_RATE_HZ,
         center_frequency_hz=CENTER_FREQUENCY_HZ,
@@ -79,17 +85,16 @@ def main():
     analyzer = PulseSequenceAnalyzer()
     raw_sequence = analyzer.analyze(pdws)
 
-    frequency_associator = FrequencyAssociator(
+    frequency_groups = FrequencyAssociator(
         frequency_tolerance_hz=ASSOCIATION_FREQUENCY_TOLERANCE_HZ
-    )
-    frequency_groups = frequency_associator.associate(pdws)
+    ).associate(pdws)
 
-    evidence_associator = EvidenceAssociator(
+    evidence_groups = EvidenceAssociator(
         frequency_tolerance_hz=ASSOCIATION_FREQUENCY_TOLERANCE_HZ,
         pulse_width_tolerance_s=ASSOCIATION_PULSE_WIDTH_TOLERANCE_S,
         timing_tolerance_s=ASSOCIATION_TIMING_TOLERANCE_S,
-    )
-    evidence_groups = evidence_associator.associate(pdws)
+        amplitude_tolerance_db=ASSOCIATION_AMPLITUDE_TOLERANCE_DB,
+    ).associate(pdws)
 
     print("S2B Experimental ESM")
     print("--------------------")
@@ -102,12 +107,7 @@ def main():
     for item in raw_sequence:
         pdw = item["pdw"]
         pri_s = item["pri_s"]
-
-        if pri_s is None:
-            pri_text = "--------"
-        else:
-            pri_text = f"{pri_s * 1e6:8.3f} us"
-
+        pri_text = "--------" if pri_s is None else f"{pri_s * 1e6:8.3f} us"
         print(f"{pdw}  PRI={pri_text}")
 
     print()
@@ -118,7 +118,7 @@ def main():
     )
 
     print_groups(
-        "Evidence candidate groups - frequency + PW + PRI consistency",
+        "Evidence groups - frequency + PW + amplitude + modulation + PRI",
         evidence_groups,
         analyzer,
     )
