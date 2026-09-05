@@ -9,14 +9,9 @@ from pulse_sequence import PulseSequenceAnalyzer
 def main():
 
     source = SimulatedSource(
-        start_delay_s=SIM_START_DELAY_S,
         sample_rate_hz=SAMPLE_RATE_HZ,
         center_frequency_hz=CENTER_FREQUENCY_HZ,
-        if_frequency_hz=SIM_IF_FREQUENCY_HZ,
-        pulse_width_s=SIM_PULSE_WIDTH_S,
-        pri_s=SIM_PRI_S,
-        num_pulses=SIM_NUM_PULSES,
-        amplitude=SIM_AMPLITUDE,
+        emitters=SIM_EMITTERS,
         noise_std=SIM_NOISE_STD,
     )
 
@@ -44,7 +39,8 @@ def main():
 
     print("S2B Experimental ESM")
     print("--------------------")
-    print(f"Pulses detected : {len(pulses)}")
+    print(f"Configured emitters : {len(SIM_EMITTERS)}")
+    print(f"Pulses detected     : {len(pulses)}")
     print()
 
     for item in sequence:
