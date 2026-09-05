@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
+from family_specific_waveform_library import build_family_specific_waveform_library
 from operational_waveform_classifier_cyclic import CyclicOperationalWaveformClassifier
-from waveform_known_library import build_known_waveform_library
 
 
 @dataclass(frozen=True)
@@ -17,11 +17,11 @@ class StrictWaveformClassification:
 
 
 class StrictOperationalWaveformClassifier:
-    """Broad physics classification followed by strict known-library acceptance."""
+    """Broad physics classification followed by family-specific library acceptance."""
 
     def __init__(self, sample_rate_hz=40_000_000.0):
         self.broad = CyclicOperationalWaveformClassifier(sample_rate_hz)
-        self.library = build_known_waveform_library(sample_rate_hz)
+        self.library = build_family_specific_waveform_library(sample_rate_hz)
 
     def classify(self, samples):
         broad = self.broad.classify(samples)
@@ -37,7 +37,7 @@ class StrictOperationalWaveformClassifier:
                 rejection_reason=broad.rejection_reason or "broad-family classifier rejected waveform",
             )
 
-        match = self.library.match(samples, broad_family=broad.family)
+        match = self.library.match(samples, broad.family)
         if not match.accepted:
             return StrictWaveformClassification(
                 family="UNKNOWN",
@@ -50,9 +50,6 @@ class StrictOperationalWaveformClassifier:
                 rejection_reason="outside known-waveform library acceptance region",
             )
 
-        # Confidence remains an engineering evidence value, not a calibrated
-        # posterior probability. Penalise broad confidence as library distance
-        # approaches the empirical acceptance boundary.
         library_quality = max(0.0, 1.0 - 0.5 * match.distance_ratio)
         confidence = min(float(broad.confidence), float(library_quality))
         return StrictWaveformClassification(
