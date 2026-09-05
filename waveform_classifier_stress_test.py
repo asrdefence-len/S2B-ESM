@@ -63,6 +63,8 @@ def main():
     confusion = defaultdict(lambda: defaultdict(int))
     per_snr = defaultdict(lambda: [0, 0])
     per_waveform = defaultdict(lambda: [0, 0])
+    per_timing = defaultdict(lambda: [0, 0])
+    per_waveform_timing = defaultdict(lambda: defaultdict(lambda: [0, 0]))
     total = 0
     correct = 0
     seed = 1000
@@ -93,6 +95,10 @@ def main():
                         per_snr[snr_db][1] += 1
                         per_waveform[name][0] += int(ok)
                         per_waveform[name][1] += 1
+                        per_timing[timing_shift][0] += int(ok)
+                        per_timing[timing_shift][1] += 1
+                        per_waveform_timing[name][timing_shift][0] += int(ok)
+                        per_waveform_timing[name][timing_shift][1] += 1
 
     print("S2B WAVEFORM CLASSIFIER STRESS TEST")
     print("===================================")
@@ -115,6 +121,31 @@ def main():
     for snr_db in snrs_db:
         good, count = per_snr[snr_db]
         print(f"{snr_db:2d} dB       {100.0 * good / count:6.2f}%  ({good}/{count})")
+
+    print()
+    print("Accuracy by timing shift")
+    print("------------------------")
+    for timing_shift in timing_shifts:
+        good, count = per_timing[timing_shift]
+        sign = "+" if timing_shift > 0 else ""
+        print(
+            f"{sign}{timing_shift:2d} samples  "
+            f"{100.0 * good / count:6.2f}%  ({good}/{count})"
+        )
+
+    print()
+    print("Waveform accuracy by timing shift")
+    print("---------------------------------")
+    header = "waveform   " + " ".join(
+        f"{('+' if shift > 0 else '') + str(shift):>10s}" for shift in timing_shifts
+    )
+    print(header)
+    for name, _, _ in waveform_cases():
+        values = []
+        for timing_shift in timing_shifts:
+            good, count = per_waveform_timing[name][timing_shift]
+            values.append(f"{100.0 * good / count:9.2f}%")
+        print(f"{name:10s} " + " ".join(values))
 
     print()
     print("Family confusion matrix (counts)")
