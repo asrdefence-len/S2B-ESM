@@ -24,6 +24,8 @@ class SimulatedSource:
                 num_pulses=emitter["num_pulses"],
                 amplitude=emitter["amplitude"],
                 start_delay_s=emitter["start_delay_s"],
+                modulation=emitter.get("modulation", "CW"),
+                lfm_bandwidth_hz=emitter.get("lfm_bandwidth_hz", 0.0),
             )
             for emitter in emitters
         ]
