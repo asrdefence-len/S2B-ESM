@@ -7,6 +7,7 @@ from pulse_sequence import PulseSequenceAnalyzer
 from association import FrequencyAssociator, EvidenceAssociator
 from probabilistic_mht import ProbabilisticMultipleHypothesisAssociator
 from change_detection import PDWChangeDetector, print_change_detections
+from physical_emitter_correlation import PhysicalEmitterCorrelator, print_physical_emitter_hypotheses
 from operator_display import OperatorEmitterSummary, print_operator_picture
 from scenario_runner import select_scenario
 from truth_scoring import SimulationTruthScorer, print_truth_score
@@ -64,14 +65,14 @@ def print_hypotheses(hypotheses):
         print(
             f"Hypothesis {rank}: posterior={100.0 * hypothesis['probability']:.2f}%  "
             f"neg-log-weight={hypothesis['score']:.3f}  "
-            f"emitters={len(hypothesis['candidates'])}  clutter={clutter_count}"
+            f"tracks={len(hypothesis['candidates'])}  clutter={clutter_count}"
         )
         for candidate in hypothesis["candidates"]:
             pri_s = candidate.get("estimated_pri_s")
             pri_text = "unknown" if pri_s is None else f"{pri_s * 1e6:.1f} us"
             pdw_ids = ",".join(str(p.pdw_id) for p in candidate["pdws"])
             print(
-                f"  Candidate {candidate['candidate_id']}: {len(candidate['pdws'])} pulses, "
+                f"  Track {candidate['candidate_id']}: {len(candidate['pdws'])} pulses, "
                 f"F={candidate['mean_frequency_hz'] / 1e6:.3f} MHz, "
                 f"PW={candidate['mean_pulse_width_s'] * 1e6:.3f} us, "
                 f"AMP={candidate['mean_amplitude_dbfs']:.2f} dBFS, "
@@ -87,7 +88,7 @@ def print_hypotheses(hypotheses):
 def print_association_uncertainty(pdws, marginals, track_membership, best_hypothesis):
     print("Per-PDW association uncertainty")
     print("-------------------------------")
-    print("Family = emitter-family posterior mass; Track = co-association posterior mass.")
+    print("Family = sequence-family posterior mass; Track = co-association posterior mass.")
 
     best_assignment = {}
     for candidate in best_hypothesis["candidates"]:
@@ -115,7 +116,7 @@ def print_association_uncertainty(pdws, marginals, track_membership, best_hypoth
             confidence = "LOW "
 
         print(
-            f"PDW {pdw.pdw_id:06d}  C{candidate_id}  "
+            f"PDW {pdw.pdw_id:06d}  T{candidate_id}  "
             f"family={100.0 * family_weight:5.1f}%  "
             f"track={100.0 * track_weight:5.1f}%  "
             f"track confidence={confidence}"
@@ -171,8 +172,6 @@ def main():
         amplitude_tolerance_db=ASSOCIATION_AMPLITUDE_TOLERANCE_DB,
     ).associate(pdws)
 
-    # Probabilistic MHT experiment. The former heuristic beam-search MHT is
-    # deliberately retained in hypothesis_association.py for easy rollback.
     mht = ProbabilisticMultipleHypothesisAssociator(
         frequency_sigma_hz=ASSOCIATION_FREQUENCY_TOLERANCE_HZ,
         pulse_width_sigma_s=ASSOCIATION_PULSE_WIDTH_TOLERANCE_S,
@@ -190,6 +189,11 @@ def main():
     marginals = mht.association_marginals(hypotheses)
     track_membership = mht.reference_track_membership(hypotheses)
 
+    physical_hypotheses = PhysicalEmitterCorrelator(
+        frequency_scale_hz=ASSOCIATION_FREQUENCY_TOLERANCE_HZ,
+        amplitude_scale_db=ASSOCIATION_AMPLITUDE_TOLERANCE_DB,
+    ).correlate(hypotheses[0], changes)
+
     operator_summaries = OperatorEmitterSummary().build(
         hypotheses,
         marginals,
@@ -198,11 +202,7 @@ def main():
 
     truth_score = SimulationTruthScorer(
         sample_rate_hz=metadata["sample_rate_hz"]
-    ).score(
-        scenario,
-        pdws,
-        hypotheses,
-    )
+    ).score(scenario, pdws, hypotheses)
 
     print("ENGINEERING / ANALYSIS DETAIL")
     print("=============================")
@@ -211,7 +211,7 @@ def main():
     print("--------------------")
     print(f"Scenario            : {scenario.name}")
     print(f"Description         : {scenario.description}")
-    print(f"Configured emitters : {len(scenario.emitters)}")
+    print(f"Configured segments : {len(scenario.emitters)}")
     print(f"Pulses detected     : {len(pulses)}")
     print()
 
@@ -232,12 +232,8 @@ def main():
         analyzer,
     )
     print_hypotheses(hypotheses)
-    print_association_uncertainty(
-        pdws,
-        marginals,
-        track_membership,
-        hypotheses[0],
-    )
+    print_association_uncertainty(pdws, marginals, track_membership, hypotheses[0])
+    print_physical_emitter_hypotheses(physical_hypotheses)
 
     print_truth_score(truth_score)
     print_operator_picture(operator_summaries)
