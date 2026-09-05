@@ -7,6 +7,7 @@ from pulse_sequence import PulseSequenceAnalyzer
 from association import FrequencyAssociator, EvidenceAssociator
 from hypothesis_association import MultipleHypothesisAssociator
 from operator_display import OperatorEmitterSummary, print_operator_picture
+from scenario_runner import select_scenario
 
 
 def print_groups(title, groups, analyzer):
@@ -108,11 +109,15 @@ def print_association_uncertainty(pdws, marginals, track_membership, best_hypoth
 
 
 def main():
+    scenario = select_scenario()
+    if scenario is None:
+        return
+
     source = SimulatedSource(
         sample_rate_hz=SAMPLE_RATE_HZ,
         center_frequency_hz=CENTER_FREQUENCY_HZ,
-        emitters=SIM_EMITTERS,
-        noise_std=SIM_NOISE_STD,
+        emitters=scenario.emitters,
+        noise_std=scenario.noise_std,
     )
     iq, metadata = source.read()
 
@@ -162,14 +167,14 @@ def main():
         track_membership,
     )
 
-    # Engineering/analysis detail first: this is useful while developing and
-    # validating how the ESM forms the operator picture.
     print("ENGINEERING / ANALYSIS DETAIL")
     print("=============================")
     print()
     print("S2B Experimental ESM")
     print("--------------------")
-    print(f"Configured emitters : {len(SIM_EMITTERS)}")
+    print(f"Scenario            : {scenario.name}")
+    print(f"Description         : {scenario.description}")
+    print(f"Configured emitters : {len(scenario.emitters)}")
     print(f"Pulses detected     : {len(pulses)}")
     print()
 
@@ -196,8 +201,6 @@ def main():
         hypotheses[0],
     )
 
-    # The concise tactical/operator picture is printed last so it is the final
-    # result left on screen after the engineering diagnostics.
     print_operator_picture(operator_summaries)
 
 
