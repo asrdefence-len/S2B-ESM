@@ -3,6 +3,7 @@ from config import *
 from simulated_source import SimulatedSource
 from pulse_detector import PulseDetector
 from pdw_extractor import PDWExtractor
+from pulse_sequence import PulseSequenceAnalyzer
 
 
 def main():
@@ -34,14 +35,28 @@ def main():
 
     pulses = detector.detect(iq)
 
+    pdws = []
+    for pulse in pulses:
+        pdws.append(extractor.extract(iq, pulse))
+
+    analyzer = PulseSequenceAnalyzer()
+    sequence = analyzer.analyze(pdws)
+
     print("S2B Experimental ESM")
     print("--------------------")
     print(f"Pulses detected : {len(pulses)}")
     print()
 
-    for pulse in pulses:
-        pdw = extractor.extract(iq, pulse)
-        print(pdw)
+    for item in sequence:
+        pdw = item["pdw"]
+        pri_s = item["pri_s"]
+
+        if pri_s is None:
+            pri_text = "--------"
+        else:
+            pri_text = f"{pri_s * 1e6:8.3f} us"
+
+        print(f"{pdw}  PRI={pri_text}")
 
 
 if __name__ == "__main__":
