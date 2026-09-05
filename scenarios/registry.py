@@ -11,6 +11,8 @@ def _emitter(
     start_delay_s,
     modulation="CW",
     lfm_bandwidth_hz=0.0,
+    pri_jitter_s=0.0,
+    random_seed=0,
 ):
     return {
         "name": name,
@@ -22,6 +24,8 @@ def _emitter(
         "start_delay_s": start_delay_s,
         "modulation": modulation,
         "lfm_bandwidth_hz": lfm_bandwidth_hz,
+        "pri_jitter_s": pri_jitter_s,
+        "random_seed": random_seed,
     }
 
 
@@ -65,6 +69,22 @@ SCENARIOS = {
         emitters=[
             _emitter("Radar A", 2_000_000, 5.0e-6, 1.0e-3, 10, 0.50, 200e-6),
             _emitter("Radar B", 2_080_000, 5.4e-6, 1.3e-3, 8, 0.40, 500e-6),
+        ],
+    ),
+    "jittered_pri": Scenario(
+        name="jittered_pri",
+        description="Two close emitters with modest PRI jitter: A +/-20 us, B +/-30 us.",
+        noise_std=0.02,
+        emitters=[
+            _emitter(
+                "Radar A", 2_000_000, 5.0e-6, 1.0e-3, 10, 0.50, 200e-6,
+                pri_jitter_s=20e-6, random_seed=101,
+            ),
+            _emitter(
+                "Radar B", 2_080_000, 5.4e-6, 1.3e-3, 8, 0.40, 500e-6,
+                modulation="LFM", lfm_bandwidth_hz=1_000_000,
+                pri_jitter_s=30e-6, random_seed=202,
+            ),
         ],
     ),
 }
