@@ -6,6 +6,7 @@ from pdw_extractor import PDWExtractor
 from pulse_sequence import PulseSequenceAnalyzer
 from association import FrequencyAssociator, EvidenceAssociator
 from hypothesis_association import MultipleHypothesisAssociator
+from operator_display import OperatorEmitterSummary, print_operator_picture
 
 
 def print_groups(title, groups, analyzer):
@@ -155,6 +156,20 @@ def main():
     marginals = mht.association_marginals(hypotheses)
     track_membership = mht.reference_track_membership(hypotheses)
 
+    operator_summaries = OperatorEmitterSummary().build(
+        hypotheses,
+        marginals,
+        track_membership,
+    )
+
+    # This is the primary tactical/operator output.
+    print_operator_picture(operator_summaries)
+
+    # Everything below is engineering/analysis detail used to understand and
+    # validate how the ESM arrived at the operator picture.
+    print("ENGINEERING / ANALYSIS DETAIL")
+    print("=============================")
+    print()
     print("S2B Experimental ESM")
     print("--------------------")
     print(f"Configured emitters : {len(SIM_EMITTERS)}")
