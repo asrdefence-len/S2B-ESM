@@ -13,9 +13,13 @@ def _emitter(
     lfm_bandwidth_hz=0.0,
     pri_jitter_s=0.0,
     random_seed=0,
+    physical_emitter_id=None,
+    mode="UNSPECIFIED",
 ):
     return {
         "name": name,
+        "physical_emitter_id": physical_emitter_id or name,
+        "mode": mode,
         "if_frequency_hz": if_frequency_hz,
         "pulse_width_s": pulse_width_s,
         "pri_s": pri_s,
@@ -84,6 +88,41 @@ SCENARIOS = {
                 "Radar B", 2_080_000, 5.4e-6, 1.3e-3, 8, 0.40, 500e-6,
                 modulation="LFM", lfm_bandwidth_hz=1_000_000,
                 pri_jitter_s=30e-6, random_seed=202,
+            ),
+        ],
+    ),
+    "search_to_track": Scenario(
+        name="search_to_track",
+        description=(
+            "One physical radar changes from SEARCH to TRACK. The ESM is not told "
+            "that the two waveform segments come from the same physical emitter."
+        ),
+        noise_std=0.02,
+        emitters=[
+            _emitter(
+                "Radar A SEARCH",
+                2_000_000,
+                5.0e-6,
+                1.0e-3,
+                8,
+                0.50,
+                200e-6,
+                modulation="CW",
+                physical_emitter_id="Radar A",
+                mode="SEARCH",
+            ),
+            _emitter(
+                "Radar A TRACK",
+                2_050_000,
+                7.0e-6,
+                300e-6,
+                14,
+                0.48,
+                7.5e-3,
+                modulation="LFM",
+                lfm_bandwidth_hz=1_000_000,
+                physical_emitter_id="Radar A",
+                mode="TRACK",
             ),
         ],
     ),
