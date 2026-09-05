@@ -162,11 +162,8 @@ def main():
         track_membership,
     )
 
-    # This is the primary tactical/operator output.
-    print_operator_picture(operator_summaries)
-
-    # Everything below is engineering/analysis detail used to understand and
-    # validate how the ESM arrived at the operator picture.
+    # Engineering/analysis detail first: this is useful while developing and
+    # validating how the ESM forms the operator picture.
     print("ENGINEERING / ANALYSIS DETAIL")
     print("=============================")
     print()
@@ -198,6 +195,10 @@ def main():
         track_membership,
         hypotheses[0],
     )
+
+    # The concise tactical/operator picture is printed last so it is the final
+    # result left on screen after the engineering diagnostics.
+    print_operator_picture(operator_summaries)
 
 
 if __name__ == "__main__":
