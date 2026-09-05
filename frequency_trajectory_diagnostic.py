@@ -1,9 +1,22 @@
 import numpy as np
 
-from physics_waveform_frontend_v4_test import make_test_waveform
+from physics_waveform_frontend_v4_test import nlfm, stepped_frequency
+from variable_bandwidth_waveform_test import clean_waveform
 
 
 FS = 40_000_000.0
+
+
+def make_test_waveform(name, num_samples):
+    if name == "CW":
+        return clean_waveform("CW", num_samples, 0.30)
+    if name == "LFM":
+        return clean_waveform("LFM", num_samples, 0.25)
+    if name == "NLFM":
+        return nlfm(num_samples, 0.28)
+    if name == "FREQUENCY_CODED":
+        return stepped_frequency(num_samples, steps=7, normalized_step=0.045)
+    raise ValueError(name)
 
 
 def trajectory_metrics(samples):
@@ -43,7 +56,6 @@ def trajectory_metrics(samples):
 
 
 def main():
-    rng = np.random.default_rng(440001)
     width_us = 7.0
     count = int(round(width_us * 1e-6 * FS))
     names = ("CW", "LFM", "NLFM", "FREQUENCY_CODED")
@@ -57,7 +69,7 @@ def main():
     print("--------------------------------------------------------------------------------------")
 
     for name in names:
-        x = make_test_waveform(name, count, rng)
+        x = make_test_waveform(name, count)
         m = trajectory_metrics(x)
         print(
             f"{name:20s}"
