@@ -2,7 +2,7 @@ from collections import defaultdict
 
 import numpy as np
 
-from operational_waveform_classifier_cyclic import CyclicOperationalWaveformClassifier
+from strict_operational_waveform_classifier import StrictOperationalWaveformClassifier
 from operational_waveform_classifier_test import dual_tone
 from physics_waveform_frontend_v4_test import nlfm, stepped_frequency, random_polyphase
 from variable_bandwidth_waveform_test import clean_waveform
@@ -35,7 +35,6 @@ def hybrid_fm_phase(num_samples):
 
 
 def make_waveform(name, count, rng):
-    # Supported / intended examples.
     if name == "CW":
         return clean_waveform("CW", count, 0.30)
     if name == "LFM":
@@ -50,8 +49,6 @@ def make_waveform(name, count, rng):
         return clean_waveform("GENERIC_BIPHASE", count, 0.30)
     if name == "FRANK16_LIKE":
         return clean_waveform("FRANK16_LIKE", count, 0.30)
-
-    # Deliberately outside the current accepted waveform set.
     if name == "DUAL_TONE":
         return dual_tone(count, 0.18)
     if name == "SINUSOIDAL_FM":
@@ -66,11 +63,9 @@ def make_waveform(name, count, rng):
 
 
 def main():
-    classifier = CyclicOperationalWaveformClassifier(FS)
+    print("Building known-waveform library...")
+    classifier = StrictOperationalWaveformClassifier(FS)
 
-    # This test deliberately uses a STRICT acceptance philosophy:
-    # only the currently accepted waveform set should receive a known family label.
-    # Near-family but unrepresented waveforms are expected to be UNKNOWN.
     cases = (
         ("CW", "CW"),
         ("LFM", "FM"),
@@ -94,6 +89,7 @@ def main():
     stats = defaultdict(lambda: [0, 0])
     by_snr = defaultdict(lambda: [0, 0])
     confusion = defaultdict(lambda: defaultdict(int))
+    accepted_ids = defaultdict(lambda: defaultdict(int))
 
     for name, truth in cases:
         for width in widths_us:
@@ -118,17 +114,23 @@ def main():
                     by_snr[(name, snr)][0] += int(correct)
                     by_snr[(name, snr)][1] += 1
                     confusion[truth][result.family] += 1
+                    if result.library_accepted:
+                        accepted_ids[name][result.library_id] += 1
 
-    print("S2B FINAL WAVEFORM CLASSIFIER ACCEPTANCE TEST")
-    print("=============================================")
-    print("STRICT criterion: currently represented waveforms may map to CW/FM/PHASE_CODED;")
-    print("waveforms outside that represented set are expected to map to UNKNOWN.")
+    print("S2B STRICT LIBRARY-GATED WAVEFORM ACCEPTANCE TEST")
+    print("=================================================")
+    print("Broad physics classification is followed by a known-waveform library gate.")
+    print("A broad family match is not sufficient: out-of-library waveforms become UNKNOWN.")
     print()
     print("Overall accuracy by waveform")
     print("----------------------------")
     for name, truth in cases:
         good, total = stats[name]
-        print(f"{name:20s} truth={truth:12s} {100.0*good/total:8.2f}%")
+        detail = ""
+        if accepted_ids[name]:
+            best_id, count = max(accepted_ids[name].items(), key=lambda item: item[1])
+            detail = f"  common library match={best_id} ({count})"
+        print(f"{name:20s} truth={truth:12s} {100.0*good/total:8.2f}%{detail}")
 
     print()
     print("Accuracy by SNR")
@@ -160,9 +162,8 @@ def main():
     print(f"Known-waveform retention : {100.0*known_good/known_total:.2f}% ({known_good}/{known_total})")
     print(f"Unknown-waveform rejection: {100.0*unknown_good/unknown_total:.2f}% ({unknown_good}/{unknown_total})")
     print()
-    print("If unknown rejection is poor for SINUSOIDAL_FM or RANDOM_POLYPHASE, the current")
-    print("classifier is still family-level rather than strict open-set/library-level and")
-    print("should not yet be inserted with the stated UNKNOWN requirement.")
+    print("Target: retain high known-waveform accuracy while strongly rejecting the unseen")
+    print("hybrid and random-polyphase cases that the family-only classifier accepted.")
 
 
 if __name__ == "__main__":
