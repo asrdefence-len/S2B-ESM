@@ -17,7 +17,7 @@ class StrictWaveformClassification:
 
 
 class StrictOperationalWaveformClassifier:
-    """Broad physics classification followed by family-specific library acceptance."""
+    """Broad physics classification followed by strict known-library acceptance."""
 
     def __init__(self, sample_rate_hz=40_000_000.0):
         self.broad = CyclicOperationalWaveformClassifier(sample_rate_hz)
@@ -38,26 +38,35 @@ class StrictOperationalWaveformClassifier:
             )
 
         match = self.library.match(samples, broad.family)
+        # Generic CW/FM matches expose distance_ratio; direct phase-code template
+        # matches expose score instead. Convert both to one quality indicator for
+        # the existing result structure.
+        if hasattr(match, "distance_ratio"):
+            ratio = float(match.distance_ratio)
+            library_quality = max(0.0, 1.0 - 0.5 * ratio)
+        else:
+            library_quality = float(match.score)
+            ratio = max(0.0, 1.0 - library_quality)
+
         if not match.accepted:
             return StrictWaveformClassification(
                 family="UNKNOWN",
                 confidence=broad.confidence,
                 library_id=match.library_id,
                 library_accepted=False,
-                library_distance_ratio=match.distance_ratio,
+                library_distance_ratio=ratio,
                 broad_family=broad.family,
                 broad_scores=broad.scores,
                 rejection_reason="outside known-waveform library acceptance region",
             )
 
-        library_quality = max(0.0, 1.0 - 0.5 * match.distance_ratio)
         confidence = min(float(broad.confidence), float(library_quality))
         return StrictWaveformClassification(
             family=broad.family,
             confidence=confidence,
             library_id=match.library_id,
             library_accepted=True,
-            library_distance_ratio=match.distance_ratio,
+            library_distance_ratio=ratio,
             broad_family=broad.family,
             broad_scores=broad.scores,
             rejection_reason="",
