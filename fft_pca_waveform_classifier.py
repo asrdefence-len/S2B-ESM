@@ -14,6 +14,7 @@ class FFTPCAClassification:
     runner_up_family: str
     runner_up_subtype: str
     runner_up_distance: float
+    family_scores: dict
 
 
 def _next_power_of_two(n):
@@ -30,6 +31,9 @@ class FFTPCAWaveformClassifier:
 
     PCA is implemented with NumPy SVD so this experiment adds no sklearn
     dependency. Classification is nearest class centroid in whitened PCA space.
+    The returned family_scores retain soft evidence across all waveform families.
+    They sum to one, but are engineering evidence weights rather than calibrated
+    posterior probabilities.
     """
 
     def __init__(self, sample_rate_hz=40_000_000.0, n_components=8):
@@ -56,16 +60,11 @@ class FFTPCAWaveformClassifier:
             return None
         power = power / total
 
-        # Remove carrier-frequency translation by shifting the spectral power
-        # centroid to the centre bin. This keeps the spectral shape while
-        # suppressing a nuisance RF-offset dimension.
         bins = np.arange(nfft, dtype=float)
         centroid = float(np.sum(bins * power))
         shift = int(round((nfft - 1) / 2.0 - centroid))
         power = np.roll(power, shift)
 
-        # Log power makes sidelobe/ripple structure visible without allowing a
-        # single large spectral bin to dominate PCA.
         feature = np.log10(power + 1e-12)
         feature -= np.mean(feature)
         norm = np.linalg.norm(feature)
@@ -103,8 +102,6 @@ class FFTPCAWaveformClassifier:
         count = min(self.n_components, vt.shape[0], vt.shape[1])
         self.components_ = vt[:count]
 
-        # Whitening prevents a single high-variance PCA dimension dominating
-        # Euclidean nearest-centroid distance.
         denom = max(len(x) - 1, 1)
         variances = (singular_values[:count] ** 2) / denom
         self.scales_ = np.sqrt(np.maximum(variances, 1e-10))
@@ -128,6 +125,26 @@ class FFTPCAWaveformClassifier:
     def _project(self, feature):
         return self._project_matrix(feature[None, :])[0]
 
+    @staticmethod
+    def _soft_scores(ranked):
+        """Convert centroid distances to relative evidence weights.
+
+        Use distance relative to the nearest centroid so the exponentials remain
+        numerically stable. The scale is the median non-zero distance, which
+        adapts to the local geometry without claiming probability calibration.
+        """
+        distances = np.array([distance for distance, _ in ranked], dtype=float)
+        positive = distances[distances > 1e-12]
+        scale = float(np.median(positive)) if len(positive) else 1.0
+        scale = max(scale, 1e-9)
+        relative = distances - np.min(distances)
+        weights = np.exp(-relative / scale)
+        weights /= max(float(np.sum(weights)), 1e-12)
+        return {
+            family: float(weight)
+            for weight, (_, family) in zip(weights, ranked)
+        }
+
     def classify(self, samples):
         if self.mean_ is None:
             raise RuntimeError("Classifier must be fit before classify")
@@ -136,7 +153,7 @@ class FFTPCAWaveformClassifier:
         if feature is None or len(feature) != len(self.mean_):
             return FFTPCAClassification(
                 "UNKNOWN", "UNKNOWN", 0.0, float("inf"),
-                "UNKNOWN", "UNKNOWN", float("inf"),
+                "UNKNOWN", "UNKNOWN", float("inf"), {},
             )
 
         z = self._project(feature)
@@ -148,9 +165,8 @@ class FFTPCAWaveformClassifier:
 
         best_distance, best_family = ranked[0]
         second_distance, second_family = ranked[1]
+        family_scores = self._soft_scores(ranked)
 
-        # Engineering confidence only: close best centroid + separation from
-        # second-best centroid. Not a calibrated probability.
         closeness = 1.0 / (1.0 + best_distance)
         separation = max(0.0, second_distance - best_distance) / max(second_distance, 1e-9)
         confidence = float(np.clip(0.6 * closeness + 0.4 * separation, 0.0, 1.0))
@@ -163,6 +179,7 @@ class FFTPCAWaveformClassifier:
             runner_up_family=second_family,
             runner_up_subtype=self.subtypes_[second_family],
             runner_up_distance=second_distance,
+            family_scores=family_scores,
         )
 
 
