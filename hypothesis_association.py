@@ -121,6 +121,75 @@ class MultipleHypothesisAssociator:
             for candidate in hypothesis["candidates"]
         )
 
+    @staticmethod
+    def _candidate_ids(candidate):
+        return {p.pdw_id for p in candidate["pdws"]}
+
+    def association_marginals(self, hypotheses):
+        """Return per-PDW association weights across retained hypotheses.
+
+        Candidate labels are arbitrary across hypotheses, so the best
+        hypothesis is used only as a reference labelling. Every candidate in
+        another hypothesis is mapped to the reference candidate with which it
+        shares the most PDWs. Candidates with no overlap are labelled OTHER.
+
+        The returned values are relative weights over the retained beam, not
+        calibrated probabilities of truth.
+        """
+        if not hypotheses:
+            return {}
+
+        reference_candidates = hypotheses[0]["candidates"]
+        reference_sets = {
+            candidate["candidate_id"]: self._candidate_ids(candidate)
+            for candidate in reference_candidates
+        }
+
+        pdw_ids = sorted(
+            {
+                pdw.pdw_id
+                for hypothesis in hypotheses
+                for candidate in hypothesis["candidates"]
+                for pdw in candidate["pdws"]
+            }
+        )
+
+        marginals = {
+            pdw_id: {
+                **{candidate_id: 0.0 for candidate_id in reference_sets},
+                "OTHER": 0.0,
+            }
+            for pdw_id in pdw_ids
+        }
+
+        for hypothesis in hypotheses:
+            weight = hypothesis.get("probability", 0.0)
+
+            for candidate in hypothesis["candidates"]:
+                candidate_ids = self._candidate_ids(candidate)
+                best_reference = None
+                best_overlap = 0
+
+                for reference_id, reference_ids in reference_sets.items():
+                    overlap = len(candidate_ids & reference_ids)
+                    if overlap > best_overlap:
+                        best_overlap = overlap
+                        best_reference = reference_id
+
+                label = best_reference if best_reference is not None else "OTHER"
+
+                for pdw_id in candidate_ids:
+                    marginals[pdw_id][label] += weight
+
+        # Numerical normalization in case retained weights do not sum exactly.
+        for pdw_id, distribution in marginals.items():
+            total = sum(distribution.values())
+            if total > 0.0:
+                for label in distribution:
+                    distribution[label] /= total
+
+        return marginals
+
     def associate(self, pdws):
         hypotheses = [
             {
