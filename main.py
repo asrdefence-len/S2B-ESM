@@ -16,8 +16,8 @@ def print_groups(title, groups, analyzer):
         sequence = analyzer.analyze(group["pdws"])
         candidate_id = group["candidate_id"]
         mean_frequency_mhz = group["mean_frequency_hz"] / 1e6
-
         extra = ""
+
         if "mean_pulse_width_s" in group:
             mean_pw_us = group["mean_pulse_width_s"] * 1e6
             mean_amp_dbfs = group["mean_amplitude_dbfs"]
@@ -75,37 +75,33 @@ def print_hypotheses(hypotheses):
         print()
 
 
-def print_association_uncertainty(pdws, marginals):
+def print_association_uncertainty(pdws, marginals, track_membership, best_hypothesis):
     print("Per-PDW association uncertainty")
     print("-------------------------------")
-    print("Weights are relative across the retained MHT beam.")
+    print("Family = emitter-family weight; Track = probability pulse stays with the best-hypothesis track.")
+
+    best_assignment = {}
+    for candidate in best_hypothesis["candidates"]:
+        for pdw in candidate["pdws"]:
+            best_assignment[pdw.pdw_id] = candidate["candidate_id"]
 
     for pdw in pdws:
-        distribution = marginals.get(pdw.pdw_id, {})
-        ranked = sorted(
-            distribution.items(),
-            key=lambda item: item[1],
-            reverse=True,
-        )
-        best_label, best_weight = ranked[0]
-        alternatives = [
-            f"C{label}={100.0 * weight:5.1f}%" if label != "OTHER" else f"OTHER={100.0 * weight:5.1f}%"
-            for label, weight in ranked
-            if weight >= 0.005
-        ]
+        candidate_id = best_assignment[pdw.pdw_id]
+        family_weight = marginals[pdw.pdw_id].get(candidate_id, 0.0)
+        track_weight = track_membership[pdw.pdw_id].get(candidate_id, 0.0)
 
-        if best_weight >= 0.95:
+        if track_weight >= 0.95:
             confidence = "HIGH"
-        elif best_weight >= 0.75:
+        elif track_weight >= 0.75:
             confidence = "MED "
         else:
             confidence = "LOW "
 
-        best_text = f"C{best_label}" if best_label != "OTHER" else "OTHER"
         print(
-            f"PDW {pdw.pdw_id:06d}  best={best_text:5s}  "
-            f"weight={100.0 * best_weight:5.1f}%  confidence={confidence}  "
-            + "  ".join(alternatives)
+            f"PDW {pdw.pdw_id:06d}  C{candidate_id}  "
+            f"family={100.0 * family_weight:5.1f}%  "
+            f"track={100.0 * track_weight:5.1f}%  "
+            f"track confidence={confidence}"
         )
     print()
 
@@ -157,6 +153,7 @@ def main():
     )
     hypotheses = mht.associate(pdws)
     marginals = mht.association_marginals(hypotheses)
+    track_membership = mht.reference_track_membership(hypotheses)
 
     print("S2B Experimental ESM")
     print("--------------------")
@@ -180,7 +177,12 @@ def main():
         analyzer,
     )
     print_hypotheses(hypotheses)
-    print_association_uncertainty(pdws, marginals)
+    print_association_uncertainty(
+        pdws,
+        marginals,
+        track_membership,
+        hypotheses[0],
+    )
 
 
 if __name__ == "__main__":
