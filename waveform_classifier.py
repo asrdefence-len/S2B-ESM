@@ -19,14 +19,18 @@ class WaveformClassification:
 class WaveformClassifier:
     """Lightweight intra-pulse candidate-library classifier.
 
-    This is an experimental similarity classifier, not a calibrated emitter
-    identification system. It removes amplitude, common phase and linear phase
-    (carrier offset), then compares the residual complex phase structure with a
-    small candidate waveform library. Both forward and conjugated candidates
-    are considered so chirp/phase sign does not dominate the family decision.
+    The classifier uses differential phase, x[n] * conj(x[n-1]), as its main
+    representation. This removes arbitrary common carrier phase and turns a
+    constant carrier-frequency offset into an approximately constant phase
+    increment. Removing that mean increment leaves the phase transitions that
+    distinguish biphase and polyphase coding, while LFM retains a changing
+    phase increment.
+
+    This is an experimental engineering similarity classifier. Its confidence
+    is not a calibrated probability.
     """
 
-    def __init__(self, min_confidence=0.55):
+    def __init__(self, min_confidence=0.45):
         self.min_confidence = min_confidence
 
     @staticmethod
@@ -34,53 +38,92 @@ class WaveformClassifier:
         x = np.asarray(samples, dtype=np.complex128)
         if len(x) < 8:
             return None
-
         rms = np.sqrt(np.mean(np.abs(x) ** 2))
         if rms <= 1e-12:
             return None
-        x = x / rms
-
-        # Remove arbitrary common phase and carrier-frequency offset. Preserve
-        # nonlinear phase structure: chirp and phase-code transitions.
-        phase = np.unwrap(np.angle(x))
-        n = np.arange(len(x), dtype=float)
-        slope, intercept = np.polyfit(n, phase, 1)
-        x = x * np.exp(-1j * (slope * n + intercept))
-        return x
+        return x / rms
 
     @staticmethod
-    def _complex_similarity(observed, candidate):
-        candidate = WaveformClassifier._normalise(candidate)
-        if candidate is None:
+    def _differential_phase_signature(samples):
+        x = WaveformClassifier._normalise(samples)
+        if x is None:
+            return None
+
+        d = x[1:] * np.conj(x[:-1])
+        magnitude = np.abs(d)
+        valid = magnitude > 1e-8
+        if not np.any(valid):
+            return None
+        d = d / np.maximum(magnitude, 1e-12)
+
+        # Estimate the nuisance carrier increment robustly. Most samples in a
+        # phase-coded pulse lie inside chips, so the circular mean is dominated
+        # by the carrier rather than by the relatively sparse chip transitions.
+        carrier_increment = np.angle(np.sum(d[valid]))
+        d = d * np.exp(-1j * carrier_increment)
+        return d
+
+    @staticmethod
+    def _signature_similarity(observed, candidate):
+        reference = WaveformClassifier._differential_phase_signature(candidate)
+        if reference is None or len(reference) != len(observed):
             return 0.0
 
-        # Unknown absolute pulse timing can shift chip edges slightly. Test a
-        # very small local shift without making this an expensive correlator.
+        # Compare the differential-phase sequences directly. A small timing
+        # shift handles sample/chip-boundary uncertainty. Conjugation permits
+        # opposite phase/chirp sense without changing the waveform family.
         best = 0.0
         for shift in (-2, -1, 0, 1, 2):
-            y = np.roll(candidate, shift)
+            y = np.roll(reference, shift)
             direct = abs(np.vdot(y, observed)) / len(observed)
             conjugate = abs(np.vdot(np.conj(y), observed)) / len(observed)
             best = max(best, direct, conjugate)
         return float(np.clip(best, 0.0, 1.0))
 
+    @staticmethod
+    def _transition_similarity(observed, candidate):
+        """Emphasise samples where phase changes relative to the carrier.
+
+        Raw differential-phase correlation is dominated by within-chip samples
+        near zero residual phase. Weighting transition samples makes Barker,
+        generic biphase and polyphase structure much more discriminating.
+        """
+        reference = WaveformClassifier._differential_phase_signature(candidate)
+        if reference is None or len(reference) != len(observed):
+            return 0.0
+
+        obs_phase = np.angle(observed)
+        best = 0.0
+        for shift in (-2, -1, 0, 1, 2):
+            ref = np.roll(reference, shift)
+            ref_phase = np.angle(ref)
+            weight = 0.10 + np.maximum(np.abs(ref_phase), np.abs(obs_phase)) / np.pi
+            direct_error = np.angle(observed * np.conj(ref))
+            conjugate_error = np.angle(observed * ref)
+            direct = np.sum(weight * np.cos(direct_error)) / np.sum(weight)
+            conjugate = np.sum(weight * np.cos(conjugate_error)) / np.sum(weight)
+            score = 0.5 * (1.0 + max(direct, conjugate))
+            best = max(best, score)
+        return float(np.clip(best, 0.0, 1.0))
+
     def classify(self, pulse_iq):
-        observed = self._normalise(pulse_iq)
+        observed = self._differential_phase_signature(pulse_iq)
         if observed is None:
             return WaveformClassification(
                 "UNKNOWN", "UNKNOWN", 0.0, 0.0, "UNKNOWN", "UNKNOWN", 0.0
             )
 
         scores = []
-        for candidate in candidate_library(len(observed)):
-            score = self._complex_similarity(observed, candidate["samples"])
+        for candidate in candidate_library(len(pulse_iq)):
+            broad = self._signature_similarity(observed, candidate["samples"])
+            transitions = self._transition_similarity(observed, candidate["samples"])
+            score = 0.35 * broad + 0.65 * transitions
             scores.append((score, candidate["family"], candidate["subtype"]))
 
         scores.sort(reverse=True)
         best_score, best_family, best_subtype = scores[0]
         second_score, second_family, second_subtype = scores[1]
 
-        # Confidence combines absolute fit with separation from the runner-up.
         margin = max(0.0, best_score - second_score)
         confidence = float(np.clip(0.75 * best_score + 0.25 * margin, 0.0, 1.0))
 
