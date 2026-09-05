@@ -236,7 +236,7 @@ def main():
     print_physical_emitter_hypotheses(physical_hypotheses)
 
     print_truth_score(truth_score)
-    print_operator_picture(operator_summaries)
+    print_operator_picture(operator_summaries, physical_hypotheses)
 
 
 if __name__ == "__main__":
