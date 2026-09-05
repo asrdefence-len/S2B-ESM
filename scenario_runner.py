@@ -4,6 +4,7 @@ from scenarios import get_scenario, list_scenarios
 
 
 DEFAULT_SCENARIO = "close_emitters"
+DEFAULT_MHT = "gated"
 
 
 def parse_args():
@@ -12,6 +13,15 @@ def parse_args():
         "--scenario",
         default=DEFAULT_SCENARIO,
         help=f"Scenario name (default: {DEFAULT_SCENARIO})",
+    )
+    parser.add_argument(
+        "--mht",
+        choices=("gated", "reference"),
+        default=DEFAULT_MHT,
+        help=(
+            "Association engine: gated (default, fast) or reference "
+            "(slow probabilistic regression oracle)."
+        ),
     )
     parser.add_argument(
         "--list",
