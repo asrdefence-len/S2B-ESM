@@ -5,6 +5,7 @@ from pulse_detector import PulseDetector
 from pdw_extractor import PDWExtractor
 from pulse_sequence import PulseSequenceAnalyzer
 from association import FrequencyAssociator, EvidenceAssociator
+from hypothesis_association import MultipleHypothesisAssociator
 
 
 def print_groups(title, groups, analyzer):
@@ -58,6 +59,40 @@ def print_groups(title, groups, analyzer):
         print()
 
 
+def print_hypotheses(hypotheses, analyzer):
+    print("Multiple-hypothesis association")
+    print("-------------------------------")
+
+    for rank, hypothesis in enumerate(
+        hypotheses[:MHT_DISPLAY_HYPOTHESES],
+        start=1,
+    ):
+        print(
+            f"Hypothesis {rank}: "
+            f"relative probability={100.0 * hypothesis['probability']:.2f}%  "
+            f"score={hypothesis['score']:.3f}  "
+            f"emitters={len(hypothesis['candidates'])}"
+        )
+
+        for candidate in hypothesis["candidates"]:
+            pri_s = candidate.get("estimated_pri_s")
+            pri_text = "unknown" if pri_s is None else f"{pri_s * 1e6:.1f} us"
+            pdw_ids = ",".join(str(p.pdw_id) for p in candidate["pdws"])
+
+            print(
+                f"  Candidate {candidate['candidate_id']}: "
+                f"{len(candidate['pdws'])} pulses, "
+                f"F={candidate['mean_frequency_hz'] / 1e6:.3f} MHz, "
+                f"PW={candidate['mean_pulse_width_s'] * 1e6:.3f} us, "
+                f"AMP={candidate['mean_amplitude_dbfs']:.2f} dBFS, "
+                f"MOD={candidate['dominant_modulation']}, "
+                f"PRI={pri_text}"
+            )
+            print(f"    PDWs: {pdw_ids}")
+
+        print()
+
+
 def main():
     source = SimulatedSource(
         sample_rate_hz=SAMPLE_RATE_HZ,
@@ -96,6 +131,17 @@ def main():
         amplitude_tolerance_db=ASSOCIATION_AMPLITUDE_TOLERANCE_DB,
     ).associate(pdws)
 
+    hypotheses = MultipleHypothesisAssociator(
+        frequency_scale_hz=ASSOCIATION_FREQUENCY_TOLERANCE_HZ,
+        pulse_width_scale_s=ASSOCIATION_PULSE_WIDTH_TOLERANCE_S,
+        amplitude_scale_db=ASSOCIATION_AMPLITUDE_TOLERANCE_DB,
+        timing_scale_s=ASSOCIATION_TIMING_TOLERANCE_S,
+        beam_width=MHT_BEAM_WIDTH,
+        max_emitters=MHT_MAX_EMITTERS,
+        new_emitter_penalty=MHT_NEW_EMITTER_PENALTY,
+        modulation_mismatch_penalty=MHT_MODULATION_MISMATCH_PENALTY,
+    ).associate(pdws)
+
     print("S2B Experimental ESM")
     print("--------------------")
     print(f"Configured emitters : {len(SIM_EMITTERS)}")
@@ -118,10 +164,12 @@ def main():
     )
 
     print_groups(
-        "Evidence groups - frequency + PW + amplitude + modulation + PRI",
+        "Greedy evidence groups - frequency + PW + amplitude + modulation + PRI",
         evidence_groups,
         analyzer,
     )
+
+    print_hypotheses(hypotheses, analyzer)
 
 
 if __name__ == "__main__":
