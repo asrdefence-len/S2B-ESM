@@ -8,6 +8,7 @@ from association import FrequencyAssociator, EvidenceAssociator
 from hypothesis_association import MultipleHypothesisAssociator
 from operator_display import OperatorEmitterSummary, print_operator_picture
 from scenario_runner import select_scenario
+from truth_scoring import SimulationTruthScorer, print_truth_score
 
 
 def print_groups(title, groups, analyzer):
@@ -167,6 +168,14 @@ def main():
         track_membership,
     )
 
+    truth_score = SimulationTruthScorer(
+        sample_rate_hz=metadata["sample_rate_hz"]
+    ).score(
+        scenario,
+        pdws,
+        hypotheses,
+    )
+
     print("ENGINEERING / ANALYSIS DETAIL")
     print("=============================")
     print()
@@ -201,6 +210,11 @@ def main():
         hypotheses[0],
     )
 
+    # Simulation truth is an engineering test-harness output only. It is scored
+    # after inference and is never passed into detection, PDW extraction or MHT.
+    print_truth_score(truth_score)
+
+    # Keep the tactical/operator picture as the final output on screen.
     print_operator_picture(operator_summaries)
 
 
