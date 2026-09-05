@@ -20,7 +20,7 @@ SIM_EMITTERS = [
     },
     {
         "name": "Radar B",
-        "if_frequency_hz": 6_000_000,
+        "if_frequency_hz": 2_080_000,
         "pulse_width_s": 8e-6,
         "pri_s": 1.3e-3,
         "num_pulses": 8,
