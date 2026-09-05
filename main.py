@@ -6,6 +6,7 @@ from pdw_extractor import PDWExtractor
 from pulse_sequence import PulseSequenceAnalyzer
 from association import FrequencyAssociator, EvidenceAssociator
 from probabilistic_mht import ProbabilisticMultipleHypothesisAssociator
+from change_detection import PDWChangeDetector, print_change_detections
 from operator_display import OperatorEmitterSummary, print_operator_picture
 from scenario_runner import select_scenario
 from truth_scoring import SimulationTruthScorer, print_truth_score
@@ -150,6 +151,15 @@ def main():
     analyzer = PulseSequenceAnalyzer()
     raw_sequence = analyzer.analyze(pdws)
 
+    change_detector = PDWChangeDetector(
+        frequency_scale_hz=ASSOCIATION_FREQUENCY_TOLERANCE_HZ,
+        pulse_width_scale_s=ASSOCIATION_PULSE_WIDTH_TOLERANCE_S,
+        amplitude_scale_db=ASSOCIATION_AMPLITUDE_TOLERANCE_DB,
+        pri_scale_s=ASSOCIATION_TIMING_TOLERANCE_S,
+        bandwidth_scale_hz=MODULATION_LFM_BANDWIDTH_THRESHOLD_HZ,
+    )
+    changes = change_detector.detect(pdws)
+
     frequency_groups = FrequencyAssociator(
         frequency_tolerance_hz=ASSOCIATION_FREQUENCY_TOLERANCE_HZ
     ).associate(pdws)
@@ -214,6 +224,7 @@ def main():
         print(f"{pdw}  PRI={pri_text}")
 
     print()
+    print_change_detections(changes)
     print_groups("Baseline candidate groups - frequency association only", frequency_groups, analyzer)
     print_groups(
         "Greedy evidence groups - frequency + PW + amplitude + modulation + PRI",
