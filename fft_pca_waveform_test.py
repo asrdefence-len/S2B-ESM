@@ -8,6 +8,7 @@ from waveform_classifier_stress_test import impair
 
 SAMPLE_RATE_HZ = 40_000_000.0
 PULSE_SAMPLES = 256
+FAMILIES = ("CW", "LFM", "BIPHASE", "POLYPHASE")
 
 
 def make_training_set(trials_per_case=120):
@@ -49,6 +50,8 @@ def main():
 
     per_waveform_timing = defaultdict(lambda: defaultdict(lambda: [0, 0]))
     per_snr = defaultdict(lambda: [0, 0])
+    family_confusion = defaultdict(lambda: defaultdict(int))
+    waveform_confusion = defaultdict(lambda: defaultdict(int))
     total = 0
     correct = 0
     seed = 50000
@@ -87,6 +90,8 @@ def main():
                         per_waveform_timing[display_name][timing_shift][1] += 1
                         per_snr[snr_db][0] += int(ok)
                         per_snr[snr_db][1] += 1
+                        family_confusion[truth_family][result.family] += 1
+                        waveform_confusion[display_name][result.family] += 1
 
     print("Waveform accuracy by timing shift")
     print("---------------------------------")
@@ -107,9 +112,26 @@ def main():
         print(f"{snr_db:2d} dB       {100.0 * good / count:6.2f}%  ({good}/{count})")
 
     print()
+    print("Family confusion matrix (counts)")
+    print("--------------------------------")
+    print("truth\\pred " + " ".join(f"{family:>10s}" for family in FAMILIES))
+    for truth in FAMILIES:
+        values = " ".join(f"{family_confusion[truth][pred]:10d}" for pred in FAMILIES)
+        print(f"{truth:10s} {values}")
+
+    print()
+    print("Waveform-to-family confusion (counts)")
+    print("------------------------------------")
+    print("truth waveform      " + " ".join(f"{family:>10s}" for family in FAMILIES))
+    for name in names:
+        values = " ".join(f"{waveform_confusion[name][pred]:10d}" for pred in FAMILIES)
+        print(f"{name:18s}" + values)
+
+    print()
     print(f"Overall family accuracy : {100.0 * correct / total:.2f}% ({correct}/{total})")
     print()
-    print("Compare the timing-shift columns directly with waveform_classifier_stress_test.py.")
+    print("The waveform-level table separates Barker-13 from generic biphase even though")
+    print("both have BIPHASE as their family truth. This shows where family errors go.")
     print("This remains an experimental classifier and is not integrated into PDW extraction.")
 
 
