@@ -1,8 +1,13 @@
 from dataclasses import dataclass
+import json
 
 import numpy as np
 
 from waveform_library import barker13, biphase, cw, lfm, polyphase
+
+
+MODEL_FORMAT_VERSION = 1
+FEATURE_NAME = "centred_normalised_log_fft_power"
 
 
 @dataclass(frozen=True)
@@ -101,6 +106,7 @@ class FFTPCAWaveformClassifier:
         _, singular_values, vt = np.linalg.svd(centred, full_matrices=False)
         count = min(self.n_components, vt.shape[0], vt.shape[1])
         self.components_ = vt[:count]
+        self.n_components = count
 
         denom = max(len(x) - 1, 1)
         variances = (singular_values[:count] ** 2) / denom
@@ -127,12 +133,6 @@ class FFTPCAWaveformClassifier:
 
     @staticmethod
     def _soft_scores(ranked):
-        """Convert centroid distances to relative evidence weights.
-
-        Use distance relative to the nearest centroid so the exponentials remain
-        numerically stable. The scale is the median non-zero distance, which
-        adapts to the local geometry without claiming probability calibration.
-        """
         distances = np.array([distance for distance, _ in ranked], dtype=float)
         positive = distances[distances > 1e-12]
         scale = float(np.median(positive)) if len(positive) else 1.0
@@ -147,7 +147,7 @@ class FFTPCAWaveformClassifier:
 
     def classify(self, samples):
         if self.mean_ is None:
-            raise RuntimeError("Classifier must be fit before classify")
+            raise RuntimeError("Classifier must be fit or loaded before classify")
 
         feature = self._spectral_feature(samples)
         if feature is None or len(feature) != len(self.mean_):
@@ -181,6 +181,75 @@ class FFTPCAWaveformClassifier:
             runner_up_distance=second_distance,
             family_scores=family_scores,
         )
+
+    def save_model(self, path, metadata=None):
+        if self.mean_ is None:
+            raise RuntimeError("Classifier must be fit before saving")
+
+        families = sorted(self.centroids_)
+        centroids = np.vstack([self.centroids_[family] for family in families])
+        subtypes = [self.subtypes_[family] for family in families]
+
+        model_metadata = {
+            "model_format_version": MODEL_FORMAT_VERSION,
+            "feature_name": FEATURE_NAME,
+            "sample_rate_hz": self.sample_rate_hz,
+            "n_components": self.n_components,
+            "feature_length": int(len(self.mean_)),
+            "families": families,
+            "subtypes": subtypes,
+        }
+        if metadata:
+            model_metadata.update(metadata)
+
+        np.savez_compressed(
+            path,
+            mean=self.mean_,
+            components=self.components_,
+            scales=self.scales_,
+            centroids=centroids,
+            metadata_json=np.array(json.dumps(model_metadata)),
+        )
+
+    @classmethod
+    def load_model(cls, path):
+        with np.load(path, allow_pickle=False) as data:
+            metadata = json.loads(str(data["metadata_json"].item()))
+            if metadata.get("model_format_version") != MODEL_FORMAT_VERSION:
+                raise ValueError(
+                    f"Unsupported model format version: {metadata.get('model_format_version')}"
+                )
+            if metadata.get("feature_name") != FEATURE_NAME:
+                raise ValueError(
+                    f"Unexpected feature representation: {metadata.get('feature_name')}"
+                )
+
+            classifier = cls(
+                sample_rate_hz=float(metadata["sample_rate_hz"]),
+                n_components=int(metadata["n_components"]),
+            )
+            classifier.mean_ = np.array(data["mean"], dtype=np.float64)
+            classifier.components_ = np.array(data["components"], dtype=np.float64)
+            classifier.scales_ = np.array(data["scales"], dtype=np.float64)
+            centroids = np.array(data["centroids"], dtype=np.float64)
+
+            families = list(metadata["families"])
+            subtypes = list(metadata["subtypes"])
+            classifier.centroids_ = {
+                family: centroids[index]
+                for index, family in enumerate(families)
+            }
+            classifier.subtypes_ = {
+                family: subtypes[index]
+                for index, family in enumerate(families)
+            }
+
+            expected_length = int(metadata["feature_length"])
+            if len(classifier.mean_) != expected_length:
+                raise ValueError("Model feature length does not match metadata")
+
+            classifier.model_metadata_ = metadata
+            return classifier
 
 
 def default_clean_cases(num_samples=256):
