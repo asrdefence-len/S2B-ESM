@@ -5,7 +5,7 @@ from pulse_detector import PulseDetector
 from pdw_extractor import PDWExtractor
 from pulse_sequence import PulseSequenceAnalyzer
 from association import FrequencyAssociator, EvidenceAssociator
-from hypothesis_association import MultipleHypothesisAssociator
+from probabilistic_mht import ProbabilisticMultipleHypothesisAssociator
 from operator_display import OperatorEmitterSummary, print_operator_picture
 from scenario_runner import select_scenario
 from truth_scoring import SimulationTruthScorer, print_truth_score
@@ -55,13 +55,15 @@ def print_groups(title, groups, analyzer):
 
 
 def print_hypotheses(hypotheses):
-    print("Multiple-hypothesis association")
-    print("-------------------------------")
+    print("Probabilistic multiple-hypothesis association")
+    print("---------------------------------------------")
 
     for rank, hypothesis in enumerate(hypotheses[:MHT_DISPLAY_HYPOTHESES], start=1):
+        clutter_count = len(hypothesis.get("clutter_pdws", []))
         print(
-            f"Hypothesis {rank}: relative weight={100.0 * hypothesis['probability']:.2f}%  "
-            f"score={hypothesis['score']:.3f}  emitters={len(hypothesis['candidates'])}"
+            f"Hypothesis {rank}: posterior={100.0 * hypothesis['probability']:.2f}%  "
+            f"neg-log-weight={hypothesis['score']:.3f}  "
+            f"emitters={len(hypothesis['candidates'])}  clutter={clutter_count}"
         )
         for candidate in hypothesis["candidates"]:
             pri_s = candidate.get("estimated_pri_s")
@@ -75,13 +77,16 @@ def print_hypotheses(hypotheses):
                 f"MOD={candidate['dominant_modulation']}, PRI={pri_text}"
             )
             print(f"    PDWs: {pdw_ids}")
+        if clutter_count:
+            clutter_ids = ",".join(str(p.pdw_id) for p in hypothesis["clutter_pdws"])
+            print(f"  Clutter PDWs: {clutter_ids}")
         print()
 
 
 def print_association_uncertainty(pdws, marginals, track_membership, best_hypothesis):
     print("Per-PDW association uncertainty")
     print("-------------------------------")
-    print("Family = emitter-family weight; Track = probability pulse stays with the best-hypothesis track.")
+    print("Family = emitter-family posterior mass; Track = co-association posterior mass.")
 
     best_assignment = {}
     for candidate in best_hypothesis["candidates"]:
@@ -89,7 +94,15 @@ def print_association_uncertainty(pdws, marginals, track_membership, best_hypoth
             best_assignment[pdw.pdw_id] = candidate["candidate_id"]
 
     for pdw in pdws:
-        candidate_id = best_assignment[pdw.pdw_id]
+        candidate_id = best_assignment.get(pdw.pdw_id)
+        if candidate_id is None:
+            other_weight = marginals.get(pdw.pdw_id, {}).get("OTHER", 0.0)
+            print(
+                f"PDW {pdw.pdw_id:06d}  CLUTTER  "
+                f"posterior={100.0 * other_weight:5.1f}%"
+            )
+            continue
+
         family_weight = marginals[pdw.pdw_id].get(candidate_id, 0.0)
         track_weight = track_membership[pdw.pdw_id].get(candidate_id, 0.0)
 
@@ -148,15 +161,20 @@ def main():
         amplitude_tolerance_db=ASSOCIATION_AMPLITUDE_TOLERANCE_DB,
     ).associate(pdws)
 
-    mht = MultipleHypothesisAssociator(
-        frequency_scale_hz=ASSOCIATION_FREQUENCY_TOLERANCE_HZ,
-        pulse_width_scale_s=ASSOCIATION_PULSE_WIDTH_TOLERANCE_S,
-        amplitude_scale_db=ASSOCIATION_AMPLITUDE_TOLERANCE_DB,
-        timing_scale_s=ASSOCIATION_TIMING_TOLERANCE_S,
+    # Probabilistic MHT experiment. The former heuristic beam-search MHT is
+    # deliberately retained in hypothesis_association.py for easy rollback.
+    mht = ProbabilisticMultipleHypothesisAssociator(
+        frequency_sigma_hz=ASSOCIATION_FREQUENCY_TOLERANCE_HZ,
+        pulse_width_sigma_s=ASSOCIATION_PULSE_WIDTH_TOLERANCE_S,
+        amplitude_sigma_db=ASSOCIATION_AMPLITUDE_TOLERANCE_DB,
+        timing_sigma_s=ASSOCIATION_TIMING_TOLERANCE_S,
         beam_width=MHT_BEAM_WIDTH,
         max_emitters=MHT_MAX_EMITTERS,
-        new_emitter_penalty=MHT_NEW_EMITTER_PENALTY,
-        modulation_mismatch_penalty=MHT_MODULATION_MISMATCH_PENALTY,
+        birth_probability=PMHT_BIRTH_PROBABILITY,
+        clutter_probability=PMHT_CLUTTER_PROBABILITY,
+        modulation_match_probability=PMHT_MODULATION_MATCH_PROBABILITY,
+        missed_pulse_probability=PMHT_MISSED_PULSE_PROBABILITY,
+        max_pri_multiple=PMHT_MAX_PRI_MULTIPLE,
     )
     hypotheses = mht.associate(pdws)
     marginals = mht.association_marginals(hypotheses)
@@ -210,11 +228,7 @@ def main():
         hypotheses[0],
     )
 
-    # Simulation truth is an engineering test-harness output only. It is scored
-    # after inference and is never passed into detection, PDW extraction or MHT.
     print_truth_score(truth_score)
-
-    # Keep the tactical/operator picture as the final output on screen.
     print_operator_picture(operator_summaries)
 
 
