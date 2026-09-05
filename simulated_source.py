@@ -26,6 +26,8 @@ class SimulatedSource:
                 start_delay_s=emitter["start_delay_s"],
                 modulation=emitter.get("modulation", "CW"),
                 lfm_bandwidth_hz=emitter.get("lfm_bandwidth_hz", 0.0),
+                pri_jitter_s=emitter.get("pri_jitter_s", 0.0),
+                random_seed=emitter.get("random_seed", 0),
             )
             for emitter in emitters
         ]
