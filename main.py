@@ -23,11 +23,7 @@ def print_groups(title, groups, analyzer):
             mean_amp_dbfs = group["mean_amplitude_dbfs"]
             modulation = group["dominant_modulation"]
             estimated_pri_s = group.get("estimated_pri_s")
-            pri_text = (
-                "unknown"
-                if estimated_pri_s is None
-                else f"{estimated_pri_s * 1e6:.3f} us"
-            )
+            pri_text = "unknown" if estimated_pri_s is None else f"{estimated_pri_s * 1e6:.3f} us"
             extra = (
                 f", mean PW={mean_pw_us:.3f} us"
                 f", mean AMP={mean_amp_dbfs:.2f} dBFS"
@@ -36,17 +32,14 @@ def print_groups(title, groups, analyzer):
             )
 
         print(
-            f"Candidate {candidate_id}: "
-            f"{len(group['pdws'])} pulses, "
-            f"mean frequency={mean_frequency_mhz:.3f} MHz"
-            f"{extra}"
+            f"Candidate {candidate_id}: {len(group['pdws'])} pulses, "
+            f"mean frequency={mean_frequency_mhz:.3f} MHz{extra}"
         )
 
         for item in sequence:
             pdw = item["pdw"]
             pri_s = item["pri_s"]
             pri_text = "--------" if pri_s is None else f"{pri_s * 1e6:8.3f} us"
-
             print(
                 f"  PDW {pdw.pdw_id:06d}  "
                 f"PW={pdw.pulse_width_s * 1e6:6.3f} us  "
@@ -55,42 +48,66 @@ def print_groups(title, groups, analyzer):
                 f"BW={pdw.modulation_bandwidth_hz / 1e6:5.3f} MHz  "
                 f"PRI={pri_text}"
             )
-
         print()
 
 
-def print_hypotheses(hypotheses, analyzer):
+def print_hypotheses(hypotheses):
     print("Multiple-hypothesis association")
     print("-------------------------------")
 
-    for rank, hypothesis in enumerate(
-        hypotheses[:MHT_DISPLAY_HYPOTHESES],
-        start=1,
-    ):
+    for rank, hypothesis in enumerate(hypotheses[:MHT_DISPLAY_HYPOTHESES], start=1):
         print(
-            f"Hypothesis {rank}: "
-            f"relative probability={100.0 * hypothesis['probability']:.2f}%  "
-            f"score={hypothesis['score']:.3f}  "
-            f"emitters={len(hypothesis['candidates'])}"
+            f"Hypothesis {rank}: relative weight={100.0 * hypothesis['probability']:.2f}%  "
+            f"score={hypothesis['score']:.3f}  emitters={len(hypothesis['candidates'])}"
         )
-
         for candidate in hypothesis["candidates"]:
             pri_s = candidate.get("estimated_pri_s")
             pri_text = "unknown" if pri_s is None else f"{pri_s * 1e6:.1f} us"
             pdw_ids = ",".join(str(p.pdw_id) for p in candidate["pdws"])
-
             print(
-                f"  Candidate {candidate['candidate_id']}: "
-                f"{len(candidate['pdws'])} pulses, "
+                f"  Candidate {candidate['candidate_id']}: {len(candidate['pdws'])} pulses, "
                 f"F={candidate['mean_frequency_hz'] / 1e6:.3f} MHz, "
                 f"PW={candidate['mean_pulse_width_s'] * 1e6:.3f} us, "
                 f"AMP={candidate['mean_amplitude_dbfs']:.2f} dBFS, "
-                f"MOD={candidate['dominant_modulation']}, "
-                f"PRI={pri_text}"
+                f"MOD={candidate['dominant_modulation']}, PRI={pri_text}"
             )
             print(f"    PDWs: {pdw_ids}")
-
         print()
+
+
+def print_association_uncertainty(pdws, marginals):
+    print("Per-PDW association uncertainty")
+    print("-------------------------------")
+    print("Weights are relative across the retained MHT beam.")
+
+    for pdw in pdws:
+        distribution = marginals.get(pdw.pdw_id, {})
+        ranked = sorted(
+            distribution.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        best_label, best_weight = ranked[0]
+        alternatives = [
+            f"C{label}={100.0 * weight:5.1f}%" if label != "OTHER" else f"OTHER={100.0 * weight:5.1f}%"
+            for label, weight in ranked
+            if weight >= 0.005
+        ]
+
+        if best_weight >= 0.95:
+            confidence = "HIGH"
+        elif best_weight >= 0.75:
+            confidence = "MED "
+        else:
+            confidence = "LOW "
+
+        best_text = f"C{best_label}" if best_label != "OTHER" else "OTHER"
+        print(
+            f"PDW {pdw.pdw_id:06d}  best={best_text:5s}  "
+            f"weight={100.0 * best_weight:5.1f}%  confidence={confidence}  "
+            + "  ".join(alternatives)
+        )
+    print()
 
 
 def main():
@@ -100,7 +117,6 @@ def main():
         emitters=SIM_EMITTERS,
         noise_std=SIM_NOISE_STD,
     )
-
     iq, metadata = source.read()
 
     detector = PulseDetector(
@@ -108,7 +124,6 @@ def main():
         sample_rate_hz=metadata["sample_rate_hz"],
         min_pulse_width_s=MIN_PULSE_WIDTH_S,
     )
-
     extractor = PDWExtractor(
         sample_rate_hz=metadata["sample_rate_hz"],
         center_frequency_hz=metadata["center_frequency_hz"],
@@ -116,7 +131,6 @@ def main():
 
     pulses = detector.detect(iq)
     pdws = [extractor.extract(iq, pulse) for pulse in pulses]
-
     analyzer = PulseSequenceAnalyzer()
     raw_sequence = analyzer.analyze(pdws)
 
@@ -131,7 +145,7 @@ def main():
         amplitude_tolerance_db=ASSOCIATION_AMPLITUDE_TOLERANCE_DB,
     ).associate(pdws)
 
-    hypotheses = MultipleHypothesisAssociator(
+    mht = MultipleHypothesisAssociator(
         frequency_scale_hz=ASSOCIATION_FREQUENCY_TOLERANCE_HZ,
         pulse_width_scale_s=ASSOCIATION_PULSE_WIDTH_TOLERANCE_S,
         amplitude_scale_db=ASSOCIATION_AMPLITUDE_TOLERANCE_DB,
@@ -140,7 +154,9 @@ def main():
         max_emitters=MHT_MAX_EMITTERS,
         new_emitter_penalty=MHT_NEW_EMITTER_PENALTY,
         modulation_mismatch_penalty=MHT_MODULATION_MISMATCH_PENALTY,
-    ).associate(pdws)
+    )
+    hypotheses = mht.associate(pdws)
+    marginals = mht.association_marginals(hypotheses)
 
     print("S2B Experimental ESM")
     print("--------------------")
@@ -157,19 +173,14 @@ def main():
         print(f"{pdw}  PRI={pri_text}")
 
     print()
-    print_groups(
-        "Baseline candidate groups - frequency association only",
-        frequency_groups,
-        analyzer,
-    )
-
+    print_groups("Baseline candidate groups - frequency association only", frequency_groups, analyzer)
     print_groups(
         "Greedy evidence groups - frequency + PW + amplitude + modulation + PRI",
         evidence_groups,
         analyzer,
     )
-
-    print_hypotheses(hypotheses, analyzer)
+    print_hypotheses(hypotheses)
+    print_association_uncertainty(pdws, marginals)
 
 
 if __name__ == "__main__":
