@@ -115,7 +115,6 @@ class MultipleHypothesisAssociator:
 
     @staticmethod
     def _signature(hypothesis):
-        """Canonical assignment signature used to remove duplicate branches."""
         return tuple(
             tuple(p.pdw_id for p in candidate["pdws"])
             for candidate in hypothesis["candidates"]
@@ -126,15 +125,12 @@ class MultipleHypothesisAssociator:
         return {p.pdw_id for p in candidate["pdws"]}
 
     def association_marginals(self, hypotheses):
-        """Return per-PDW association weights across retained hypotheses.
+        """Coarse per-PDW emitter-family weights across retained hypotheses.
 
-        Candidate labels are arbitrary across hypotheses, so the best
-        hypothesis is used only as a reference labelling. Every candidate in
-        another hypothesis is mapped to the reference candidate with which it
-        shares the most PDWs. Candidates with no overlap are labelled OTHER.
-
-        The returned values are relative weights over the retained beam, not
-        calibrated probabilities of truth.
+        Candidate labels are arbitrary across hypotheses. Candidates are mapped
+        to the best-hypothesis emitter family by PDW overlap. This deliberately
+        collapses split-track alternatives into the same emitter family, so it
+        answers "which emitter family?" rather than "which exact track?".
         """
         if not hypotheses:
             return {}
@@ -164,7 +160,6 @@ class MultipleHypothesisAssociator:
 
         for hypothesis in hypotheses:
             weight = hypothesis.get("probability", 0.0)
-
             for candidate in hypothesis["candidates"]:
                 candidate_ids = self._candidate_ids(candidate)
                 best_reference = None
@@ -177,18 +172,59 @@ class MultipleHypothesisAssociator:
                         best_reference = reference_id
 
                 label = best_reference if best_reference is not None else "OTHER"
-
                 for pdw_id in candidate_ids:
                     marginals[pdw_id][label] += weight
 
-        # Numerical normalization in case retained weights do not sum exactly.
-        for pdw_id, distribution in marginals.items():
+        for distribution in marginals.values():
             total = sum(distribution.values())
             if total > 0.0:
                 for label in distribution:
                     distribution[label] /= total
 
         return marginals
+
+    def reference_track_membership(self, hypotheses):
+        """Return label-invariant co-association with best-hypothesis tracks.
+
+        For each best-hypothesis candidate, use its first PDW as an anchor.
+        A PDW's membership weight is the summed MHT probability of hypotheses
+        in which that PDW and the anchor occur in the same candidate. This
+        exposes track-splitting uncertainty that emitter-family marginals hide.
+        """
+        if not hypotheses:
+            return {}
+
+        reference_candidates = hypotheses[0]["candidates"]
+        reference = {
+            candidate["candidate_id"]: {
+                "anchor_pdw_id": candidate["pdws"][0].pdw_id,
+                "reference_pdw_ids": self._candidate_ids(candidate),
+            }
+            for candidate in reference_candidates
+        }
+
+        membership = {
+            pdw_id: {candidate_id: 0.0 for candidate_id in reference}
+            for candidate in reference_candidates
+            for pdw_id in self._candidate_ids(candidate)
+        }
+
+        for hypothesis in hypotheses:
+            weight = hypothesis.get("probability", 0.0)
+            hypothesis_sets = [self._candidate_ids(c) for c in hypothesis["candidates"]]
+
+            for candidate_id, info in reference.items():
+                anchor = info["anchor_pdw_id"]
+                anchor_set = next(
+                    (ids for ids in hypothesis_sets if anchor in ids),
+                    set(),
+                )
+
+                for pdw_id in info["reference_pdw_ids"]:
+                    if pdw_id in anchor_set:
+                        membership[pdw_id][candidate_id] += weight
+
+        return membership
 
     def associate(self, pdws):
         hypotheses = [
@@ -203,7 +239,6 @@ class MultipleHypothesisAssociator:
             branches = []
 
             for hypothesis in hypotheses:
-                # Branch 1..N: assign this PDW to each existing emitter candidate.
                 for candidate_index, candidate in enumerate(hypothesis["candidates"]):
                     branch = copy.deepcopy(hypothesis)
                     cost = self._assignment_cost(pdw, candidate)
@@ -216,7 +251,6 @@ class MultipleHypothesisAssociator:
                     )
                     branches.append(branch)
 
-                # Additional branch: this PDW begins a previously unseen emitter.
                 if len(hypothesis["candidates"]) < self.max_emitters:
                     branch = copy.deepcopy(hypothesis)
                     candidate_id = len(branch["candidates"]) + 1
@@ -229,7 +263,6 @@ class MultipleHypothesisAssociator:
                     )
                     branches.append(branch)
 
-            # Remove duplicate assignment histories, then retain only the best beam.
             unique = {}
             for branch in branches:
                 signature = self._signature(branch)
@@ -241,8 +274,6 @@ class MultipleHypothesisAssociator:
                 key=lambda item: item["score"],
             )[: self.beam_width]
 
-        # Convert costs to relative probabilities for display. They are model
-        # probabilities, not calibrated real-world probabilities.
         if hypotheses:
             best_score = hypotheses[0]["score"]
             weights = [
