@@ -13,6 +13,7 @@ class RadarSimulator:
         num_pulses,
         amplitude=0.5,
         noise_std=0.0,
+        start_delay_s=0.0,
     ):
         self.sample_rate_hz = sample_rate_hz
         self.if_frequency_hz = if_frequency_hz
@@ -21,10 +22,17 @@ class RadarSimulator:
         self.num_pulses = num_pulses
         self.amplitude = amplitude
         self.noise_std = noise_std
+        self.start_delay_s = start_delay_s
 
     def generate(self):
-        total_time_s = self.num_pulses * self.pri_s
-        num_samples = int(round(total_time_s * self.sample_rate_hz))
+        total_time_s = (
+            self.start_delay_s
+            + self.num_pulses * self.pri_s
+        )
+
+        num_samples = int(round(
+            total_time_s * self.sample_rate_hz
+        ))
 
         t = np.arange(num_samples) / self.sample_rate_hz
 
@@ -38,21 +46,33 @@ class RadarSimulator:
             self.pri_s * self.sample_rate_hz
         ))
 
+        start_delay_samples = int(round(
+            self.start_delay_s * self.sample_rate_hz
+        ))
+
         for pulse_index in range(self.num_pulses):
-            start = pulse_index * pri_samples
-            stop = min(start + pulse_samples, num_samples)
+            start = (
+                start_delay_samples
+                + pulse_index * pri_samples
+            )
+
+            stop = min(
+                start + pulse_samples,
+                num_samples
+            )
 
             pulse_t = t[start:stop]
 
             iq[start:stop] = (
                 self.amplitude
                 * np.exp(
-                    1j * 2 * np.pi
+                    1j
+                    * 2
+                    * np.pi
                     * self.if_frequency_hz
                     * pulse_t
                 )
             )
-
         if self.noise_std > 0:
             noise = (
                 np.random.normal(0, self.noise_std, num_samples)

@@ -37,7 +37,9 @@ class PDWExtractor:
             stop - start
         ) / self.sample_rate_hz
 
-        amplitude_linear = np.max(np.abs(pulse_iq))
+        amplitude_linear = np.sqrt(
+            np.mean(np.abs(pulse_iq) ** 2)
+        )
 
         amplitude_dbfs = 20.0 * np.log10(
             max(amplitude_linear, 1e-12)
