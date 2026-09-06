@@ -8,7 +8,7 @@ given the scripted radar mode, scan rate, or transition labels.
 import math
 from pathlib import Path
 
-from beam_model import RotatingSincBeam, wrap_angle_deg
+from beam_model import RotatingSincBeam
 from illumination_behaviour import EmitterIlluminationTracker
 from scenario_runtime import ScenarioRuntime
 from scripted_antenna_motion import ScriptedAntennaMotion
@@ -47,6 +47,17 @@ def received_power_dbm(runtime, state, pattern_db):
     return tx_dbm + tx_gain_dbi + pattern_db - fspl_db + rx_gain_dbi
 
 
+def evidence_text(assessment):
+    if assessment.state == "PERIODIC_SCAN" and assessment.scan_period_s is not None:
+        return f"period={assessment.scan_period_s:.2f}s rate={assessment.scan_rate_rpm:.1f}RPM"
+    if assessment.state == "PERSISTENT_ILLUMINATION":
+        text = f"duration={assessment.continuous_illumination_s:.2f}s"
+        if assessment.previous_scan_period_s is not None:
+            text += f" prev_scan={assessment.previous_scan_period_s:.2f}s"
+        return text
+    return ""
+
+
 def main():
     root = Path(__file__).resolve().parent
     runtime = ScenarioRuntime(
@@ -57,8 +68,6 @@ def main():
     motion = ScriptedAntennaMotion(runtime, emitter_id)
     threshold_dbm = float(runtime.esm_receiver["detection_threshold_dbm"])
 
-    # Tracker works in dB relative to the ESM detection threshold. Thus 0 dB is
-    # the actual receiver threshold and an illumination is simply a detection.
     tracker = EmitterIlluminationTracker(
         illumination_threshold_db=0.0,
         persistent_s=1.0,
@@ -96,17 +105,15 @@ def main():
             assessment.recent_change_to,
         )
 
-        # Print state/assessment transitions, threshold crossings, and a compact
-        # 1-second heartbeat. The underlying processing still occurs every 10 ms.
         important = key != previous_key or detected != previous_detected
         heartbeat = time_s + 1e-9 >= next_summary_s
         if important or heartbeat:
-            period_text = "-" if assessment.scan_period_s is None else f"{assessment.scan_period_s:4.2f}"
+            evidence = evidence_text(assessment)
             print(
                 f"t={time_s:5.2f}s  az={antenna_motion.azimuth_deg:6.1f}  "
                 f"Prx={prx_dbm:7.1f} dBm  DET={'Y' if detected else 'n'}  "
                 f"OBS={assessment.state:<23} SYS={assessment.system_assessment:<10} "
-                f"P={period_text}s C={assessment.confidence * 100:5.1f}%"
+                f"C={assessment.confidence * 100:5.1f}%  {evidence}"
             )
             if heartbeat:
                 next_summary_s += 1.0
@@ -120,9 +127,13 @@ def main():
     print(f"  Observable state : {final.state}")
     print(f"  System assessment: {final.system_assessment}")
     print(f"  Baseline         : {final.baseline_state}")
-    if final.scan_period_s is not None:
-        print(f"  Estimated period : {final.scan_period_s:.3f} s")
-        print(f"  Estimated rate   : {final.scan_rate_rpm:.2f} RPM")
+    if final.state == "PERIODIC_SCAN" and final.scan_period_s is not None:
+        print(f"  Current period   : {final.scan_period_s:.3f} s")
+        print(f"  Current rate     : {final.scan_rate_rpm:.2f} RPM")
+    elif final.state == "PERSISTENT_ILLUMINATION":
+        print(f"  Current duration : {final.continuous_illumination_s:.2f} s")
+        if final.previous_scan_period_s is not None:
+            print(f"  Previous scan    : {final.previous_scan_period_s:.3f} s")
     if final.recent_change_from and final.recent_change_to:
         print(f"  Recent change    : {final.recent_change_from} -> {final.recent_change_to}")
 
