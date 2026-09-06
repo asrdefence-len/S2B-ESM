@@ -3,11 +3,16 @@ scenario:
   description: E3 rotates continuously, later changes to a fixed dwell, then resumes rotation
   duration_s: 35.0
 
+esm_receiver:
+  antenna_gain_dbi: 10.0
+  noise_floor_dbm: -86.0
+  detection_threshold_dbm: -76.0
+
 emitters:
   - id: E3
     type: X_BAND_NAV_RADAR
     aoa_deg: 135.0
-    peak_level_dbfs: -6.0
+    range_km: 15.0
 
     # Physical initial condition. This determines when the rotating beam happens
     # to cross the ESM bearing; the scenario does not script illumination times.
