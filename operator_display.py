@@ -63,6 +63,10 @@ class OperatorEmitterSummary:
                 sum(track_weights) / len(track_weights)
                 if track_weights else 0.0
             )
+            mean_aoa_deg = (
+                sum(getattr(pdw, "aoa_deg", 0.0) for pdw in pdws) / len(pdws)
+                if pdws else 0.0
+            )
 
             summaries.append(
                 {
@@ -71,6 +75,7 @@ class OperatorEmitterSummary:
                     "start_toa_s": pdws[0].toa_s,
                     "end_toa_s": pdws[-1].toa_s,
                     "frequency_hz": candidate["mean_frequency_hz"],
+                    "aoa_deg": mean_aoa_deg,
                     "pulse_width_s": candidate["mean_pulse_width_s"],
                     "amplitude_dbfs": candidate["mean_amplitude_dbfs"],
                     "modulation": candidate["dominant_modulation"],
@@ -140,6 +145,7 @@ def _format_pri(track):
 def _print_track(track, indent="  "):
     print(f"{indent}SEQUENCE TRACK T{track['track_id']}")
     print(f"{indent}  RF          : {track['frequency_hz'] / 1e6:.3f} MHz")
+    print(f"{indent}  AOA         : {track.get('aoa_deg', 0.0):.1f} deg")
     print(f"{indent}  PRI MEDIAN  : {_format_pri(track)}")
     print(f"{indent}  PRI PATTERN : {track['pri_pattern']}")
     print(f"{indent}  PW          : {track['pulse_width_s'] * 1e6:.3f} us")
