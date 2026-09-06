@@ -1,7 +1,7 @@
 import sys
 import math
-import random
 import time
+from pathlib import Path
 
 from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtWidgets import (
@@ -21,9 +21,14 @@ from operator_display import OperatorEmitterSummary, _physical_groups
 from scenarios import get_scenario, list_scenarios
 from beam_model import RotatingSincBeam
 from illumination_behaviour import EmitterIlluminationTracker
+from scenario_runtime import ScenarioRuntime
+from scripted_antenna_motion import ScriptedAntennaMotion
+from rf_link_budget import received_power_dbm
 
 REFRESH_MS = 750
+NAV_DT_S = 0.010
 ASSESSMENT_COLORS = {"UNASSESSED":"#777777","MONITOR":"#2f7fbf","CHANGED":"#d28b00","OF INTEREST":"#e56b00","THREAT":"#b22222"}
+
 
 class PolarEmitterCanvas(FigureCanvas):
     def __init__(self, parent=None):
@@ -49,17 +54,20 @@ class PolarEmitterCanvas(FigureCanvas):
             ax.text(a,min(r+.09,.98),e["emitter_id"]+(" *" if e.get("watched",False) else ""),ha="center",va="center",fontsize=10,fontweight="bold",zorder=4)
         self.draw_idle()
 
+
 class S2BOperatorWindow(QMainWindow):
     def __init__(self):
         super().__init__(); self.setWindowTitle("S2B ESM - Operator Display"); self.resize(1450,880)
         self.running=False; self.emitters=[]; self.selected_emitter_index=0; self.extractor=None; self.watched_emitters=set()
-        self.nav_elapsed_s=0.; self.nav_resume_monotonic=None; self.nav_last_sample_s=0.
-        self.nav_beam=RotatingSincBeam(beamwidth_deg=3.,scan_rate_rpm=30.,initial_azimuth_deg=45.,sidelobe_floor_db=-50.)
-        self.nav_tracker=self._new_nav_tracker(); self.nav_assessment=self.nav_tracker.assess(0.); self.nav_level_dbfs=-55.
+        root=Path(__file__).resolve().parent
+        self.nav_runtime=ScenarioRuntime(root/"emitter_types.yaml",root/"scripted_scenarios"/"nav_scan_to_dwell.yaml")
+        self.nav_motion=ScriptedAntennaMotion(self.nav_runtime,"E3")
+        self.nav_elapsed_s=0.; self.nav_resume_monotonic=None; self.nav_last_sample_s=0.; self.nav_pulse_count=0
+        self.nav_tracker=self._new_nav_tracker(); self.nav_assessment=self.nav_tracker.assess(0.); self.nav_prx_dbm=-200.; self.nav_detected=False; self.nav_azimuth_deg=0.
         self.timer=QTimer(self); self.timer.setInterval(REFRESH_MS); self.timer.timeout.connect(self._refresh)
         self._build_ui(); self._set_status("STOPPED"); self._refresh()
     def _new_nav_tracker(self):
-        return EmitterIlluminationTracker(history_s=30.,illumination_threshold_db=-18.,persistent_s=.75,peak_separation_s=.5,baseline_confidence_threshold=.50,change_confidence_threshold=.50,change_hold_s=3.)
+        return EmitterIlluminationTracker(history_s=30.,illumination_threshold_db=0.,persistent_s=1.,peak_separation_s=.25,baseline_confidence_threshold=.50,change_confidence_threshold=.50,change_hold_s=5.)
     def _build_ui(self):
         central=QWidget(self); self.setCentralWidget(central); root=QVBoxLayout(central); top=QHBoxLayout(); title=QLabel("S2B ESM OPERATOR DISPLAY"); title.setStyleSheet("font-size: 18px; font-weight: 700;"); top.addWidget(title); top.addStretch(1); top.addWidget(QLabel("Scenario:"))
         self.scenario_combo=QComboBox(); [self.scenario_combo.addItem(s.name) for s in list_scenarios()]; idx=self.scenario_combo.findText("close_emitters"); self.scenario_combo.setCurrentIndex(idx if idx>=0 else 0); self.scenario_combo.currentTextChanged.connect(self._scenario_changed); top.addWidget(self.scenario_combo)
@@ -78,7 +86,7 @@ class S2BOperatorWindow(QMainWindow):
     def _set_status(self,state):
         self.status_label.setText(state); bg="#1f7a3a" if state=="RUNNING" else "#9b1c1c" if state=="ERROR" else "#555"; self.status_label.setStyleSheet(f"background:{bg};color:white;font-weight:700;padding:6px;")
     def _reset_nav_radar(self):
-        self.nav_elapsed_s=0.; self.nav_resume_monotonic=time.monotonic() if self.running else None; self.nav_last_sample_s=0.; self.nav_tracker=self._new_nav_tracker(); self.nav_assessment=self.nav_tracker.assess(0.); self.nav_level_dbfs=-55.
+        self.nav_elapsed_s=0.; self.nav_resume_monotonic=time.monotonic() if self.running else None; self.nav_last_sample_s=0.; self.nav_pulse_count=0; self.nav_tracker=self._new_nav_tracker(); self.nav_assessment=self.nav_tracker.assess(0.); self.nav_prx_dbm=-200.; self.nav_detected=False; self.nav_azimuth_deg=0.
     def start_system(self):
         if self.running:return
         self.running=True; self.nav_resume_monotonic=time.monotonic(); self._set_status("RUNNING"); self.timer.start(); self._refresh()
@@ -106,22 +114,34 @@ class S2BOperatorWindow(QMainWindow):
             tracks=g["tracks"]; current=max(tracks,key=lambda x:x["end_toa_s"]); changed=len(tracks)>1; aoa=sum(t.get("aoa_deg",0.) for t in tracks)/len(tracks); conf=sum(t["track_confidence"] for t in tracks)/len(tracks); pc=sum(t["pulse_count"] for t in tracks); state="UNASSESSED" if pc<3 or conf<.75 else "CHANGED" if changed else "MONITOR"; eid=f"E{ei}"
             emitters.append({"emitter_id":eid,"aoa_deg":aoa,"state":state,"display_color":ASSESSMENT_COLORS[state],"watched":eid in self.watched_emitters,"tracks":tracks,"current":current,"links":g["links"],"track_confidence":conf,"illumination":None})
         return scenario,emitters,len(pulses)
+    def _nav_pattern_db(self,state,azimuth_deg):
+        antenna=state.mode["antenna"]
+        beam=RotatingSincBeam(beamwidth_deg=float(antenna.get("beamwidth_deg",3.)),scan_rate_rpm=0.,fixed_azimuth_deg=float(azimuth_deg),sidelobe_floor_db=-50.)
+        return beam.gain_db(state.aoa_deg,0.)
     def _update_nav_radar(self):
         if not self.running:return
-        delta=time.monotonic()-self.nav_resume_monotonic if self.nav_resume_monotonic is not None else 0.; now=self.nav_elapsed_s+delta; t=self.nav_last_sample_s
+        delta=time.monotonic()-self.nav_resume_monotonic if self.nav_resume_monotonic is not None else 0.; now=min(self.nav_runtime.duration_s,self.nav_elapsed_s+delta); t=self.nav_last_sample_s
+        threshold=float(self.nav_runtime.esm_receiver["detection_threshold_dbm"]); rx_gain=float(self.nav_runtime.esm_receiver["antenna_gain_dbi"])
         while t<=now+1e-9:
-            gain=self.nav_beam.gain_db(135.,t); self.nav_level_dbfs=max(-55.,-6.+gain)+random.gauss(0,.6); self.nav_assessment=self.nav_tracker.update(t,self.nav_level_dbfs); t+=.01
+            state=self.nav_runtime.state("E3",t); motion=self.nav_motion.state(t); antenna=state.mode["antenna"]; pattern_db=self._nav_pattern_db(state,motion.azimuth_deg)
+            self.nav_prx_dbm=received_power_dbm(state.tx_peak_power_w,float(antenna.get("peak_gain_dbi",0.)),pattern_db,float(state.mode["frequency_hz"]),state.range_km,rx_gain)
+            self.nav_detected=self.nav_prx_dbm>=threshold; self.nav_azimuth_deg=motion.azimuth_deg; self.nav_assessment=self.nav_tracker.update(t,self.nav_prx_dbm-threshold)
+            if self.nav_detected:
+                pri_s=float(state.mode["pri_us"])*1e-6; self.nav_pulse_count+=max(1,int(round(NAV_DT_S/pri_s)))
+            t+=NAV_DT_S
         self.nav_last_sample_s=max(self.nav_last_sample_s,t)
     def _nav_emitter_record(self):
-        a=self.nav_assessment; state=a.system_assessment; eid="E3"; current={"frequency_hz":9.410e9,"modulation":"CW","pri_s":1e-3,"pri_pattern":"STABLE","pulse_width_s":5e-6,"amplitude_dbfs":self.nav_level_dbfs,"pulse_count":max(0,int(self.nav_last_sample_s/.001)),"track_id":3,"end_toa_s":self.nav_last_sample_s}
-        return {"emitter_id":eid,"aoa_deg":135.,"state":state,"display_color":ASSESSMENT_COLORS.get(state,ASSESSMENT_COLORS["UNASSESSED"]),"watched":eid in self.watched_emitters,"tracks":[current],"current":current,"links":[],"track_confidence":max(0.,a.confidence),"illumination":a}
+        t=min(self.nav_runtime.duration_s,max(0.,self.nav_last_sample_s-NAV_DT_S)); truth_state=self.nav_runtime.state("E3",t); a=self.nav_assessment; state=a.system_assessment; eid="E3"; mode=truth_state.mode
+        current={"frequency_hz":float(mode["frequency_hz"]),"modulation":str(mode["waveform"]),"pri_s":float(mode["pri_us"])*1e-6,"pri_pattern":"STABLE","pulse_width_s":float(mode["pw_us"])*1e-6,"amplitude_dbfs":0.,"pulse_count":self.nav_pulse_count,"track_id":3,"end_toa_s":t,"received_power_dbm":self.nav_prx_dbm,"detected":self.nav_detected,"range_km_truth":truth_state.range_km,"antenna_azimuth_deg_truth":self.nav_azimuth_deg}
+        return {"emitter_id":eid,"aoa_deg":truth_state.aoa_deg,"state":state,"display_color":ASSESSMENT_COLORS.get(state,ASSESSMENT_COLORS["UNASSESSED"]),"watched":eid in self.watched_emitters,"tracks":[current],"current":current,"links":[],"track_confidence":max(0.,a.confidence),"illumination":a,"physical_scripted":True}
     def _refresh(self):
         try:
             scenario,emitters,pulse_count=self._process_snapshot(); self._update_nav_radar(); emitters.append(self._nav_emitter_record()); self.emitters=emitters
             if self.selected_emitter_index>=len(emitters):self.selected_emitter_index=max(0,len(emitters)-1)
-            self._populate_table(); self.polar.update_emitters(self.emitters,self.selected_emitter_index); self._show_selected_emitter(); self.statusBar().showMessage(f"Scenario: {scenario.name} | IQ pulses: {pulse_count} | Physical emitters: {len(emitters)} | E3: 9.410 GHz nav radar")
+            self._populate_table(); self.polar.update_emitters(self.emitters,self.selected_emitter_index); self._show_selected_emitter(); self.statusBar().showMessage(f"Scenario: {scenario.name} | IQ pulses: {pulse_count} | Physical emitters: {len(emitters)} | E3 physical script: 9.410 GHz, 15 km")
         except Exception as exc:
-            self.timer.stop(); self.running=False; self._set_status("ERROR"); self.statusBar().showMessage(str(exc)); self.details.setPlainText(f"UI processing error:\n\n{exc}")
+            if self.running and self.nav_resume_monotonic is not None:self.nav_elapsed_s+=time.monotonic()-self.nav_resume_monotonic
+            self.nav_resume_monotonic=None; self.timer.stop(); self.running=False; self._set_status("ERROR"); self.statusBar().showMessage(str(exc)); self.details.setPlainText(f"UI processing error:\n\n{exc}")
     def _populate_table(self):
         self.emitter_table.setRowCount(len(self.emitters))
         for row,e in enumerate(self.emitters):
@@ -141,10 +161,20 @@ class S2BOperatorWindow(QMainWindow):
             self.emitter_heading.setText("NO EMITTER SELECTED"); self.assessment_label.setText("UNASSESSED"); self.assessment_label.setStyleSheet("background:#777;color:white;font-weight:700;padding:7px;"); self.watch_button.setEnabled(False); self.details.setPlainText("No physical emitters currently assessed."); return
         e=self.emitters[self.selected_emitter_index]; c=e["current"]; watched=e.get("watched",False); self.emitter_heading.setText(f"{e['emitter_id']}  |  BEARING {e['aoa_deg']:.1f} deg"+("  * WATCH" if watched else "")); self.assessment_label.setText(e["state"]); self.assessment_label.setStyleSheet(f"background:{e['display_color']};color:white;font-weight:700;padding:7px;"); self.watch_button.setEnabled(True); self.watch_button.setText("REMOVE WATCH" if watched else "WATCH SELECTED EMITTER")
         pri="UNRESOLVED" if c["pri_s"] is None else f"{c['pri_s']*1e6:.1f} us"; tids=", ".join(f"T{t['track_id']}" for t in e["tracks"])
-        lines=["CURRENT OBSERVED STATE","----------------------",f"Physical emitter : {e['emitter_id']}",f"Bearing          : {e['aoa_deg']:.1f} deg",f"Operator watch   : {'YES' if watched else 'NO'}",f"System assessment: {e['state']}",f"Sequence tracks  : {tids}",f"RF               : {c['frequency_hz']/1e6:.3f} MHz",f"PRI median       : {pri}",f"PRI pattern      : {c['pri_pattern']}",f"Pulse width      : {c['pulse_width_s']*1e6:.3f} us",f"Waveform family  : {c['modulation']}",f"Level            : {c['amplitude_dbfs']:.2f} dBFS",f"Pulses           : {c['pulse_count']}",f"Track confidence : {100*e['track_confidence']:.1f}%","","BEHAVIOUR / CHANGE","------------------"]
+        lines=["CURRENT OBSERVED STATE","----------------------",f"Physical emitter : {e['emitter_id']}",f"Bearing          : {e['aoa_deg']:.1f} deg",f"Operator watch   : {'YES' if watched else 'NO'}",f"System assessment: {e['state']}",f"Sequence tracks  : {tids}",f"RF               : {c['frequency_hz']/1e6:.3f} MHz",f"PRI median       : {pri}",f"PRI pattern      : {c['pri_pattern']}",f"Pulse width      : {c['pulse_width_s']*1e6:.3f} us",f"Waveform family  : {c['modulation']}"]
+        if e.get("physical_scripted"):
+            threshold=float(self.nav_runtime.esm_receiver["detection_threshold_dbm"]); noise=float(self.nav_runtime.esm_receiver["noise_floor_dbm"]); lines.extend([f"Received power   : {c['received_power_dbm']:.2f} dBm",f"Detection        : {'YES' if c['detected'] else 'NO'}",f"ESM threshold    : {threshold:.1f} dBm",f"ESM noise floor  : {noise:.1f} dBm",f"Observed pulses  : {c['pulse_count']}"])
+        else:
+            lines.extend([f"Level            : {c['amplitude_dbfs']:.2f} dBFS",f"Pulses           : {c['pulse_count']}"])
+        lines.extend([f"Track confidence : {100*e['track_confidence']:.1f}%","","BEHAVIOUR / CHANGE","------------------"])
         a=e.get("illumination")
         if a is not None:
-            period="UNRESOLVED" if a.scan_period_s is None else f"{a.scan_period_s:.3f} s"; rpm="UNRESOLVED" if a.scan_rate_rpm is None else f"{a.scan_rate_rpm:.1f} RPM"; lines.extend([f"Illumination     : {a.state}",f"Scan period      : {period}",f"Estimated rate   : {rpm}",f"Period evidence  : {100*a.confidence:.1f}%",f"Baseline         : {a.baseline_state or 'NOT ESTABLISHED'}"])
+            lines.extend([f"Current behaviour: {a.state}",f"Evidence         : {100*a.confidence:.1f}%",f"Baseline         : {a.baseline_state or 'NOT ESTABLISHED'}"])
+            if a.state=="PERIODIC_SCAN" and a.scan_period_s is not None:
+                lines.extend([f"Current period   : {a.scan_period_s:.3f} s",f"Estimated rate   : {a.scan_rate_rpm:.1f} RPM"])
+            elif a.state=="PERSISTENT_ILLUMINATION":
+                lines.append(f"Current duration : {a.continuous_illumination_s:.2f} s")
+                if a.previous_scan_period_s is not None: lines.append(f"Previous behaviour: PERIODIC_SCAN ~{a.previous_scan_period_s:.3f} s")
             if a.recent_change_from and a.recent_change_to:
                 age=max(0.,self.nav_last_sample_s-(a.recent_change_time_s or self.nav_last_sample_s)); lines.append(f"Recent change    : {a.recent_change_from} -> {a.recent_change_to} ({age:.1f} s ago)")
         elif len(e["tracks"])>1:
@@ -153,6 +183,7 @@ class S2BOperatorWindow(QMainWindow):
                 tp="UNRESOLVED" if t["pri_s"] is None else f"{t['pri_s']*1e6:.1f} us"; lines.append(f"T{t['track_id']}: RF={t['frequency_hz']/1e6:.3f} MHz, PRI={tp}, PW={t['pulse_width_s']*1e6:.3f} us, MOD={t['modulation']}")
         else: lines.append("No significant linked-track behaviour change currently detected.")
         lines.extend(["","S2B INTERPRETATION","------------------","Behaviour hypotheses are not enabled yet.","OF INTEREST and THREAT are therefore not assigned automatically yet.","WATCH is an operator attention flag and does not change system assessment."]); self.details.setPlainText("\n".join(lines))
+
 
 def main():
     app=QApplication(sys.argv); app.setApplicationName("S2B ESM"); window=S2BOperatorWindow(); window.show(); sys.exit(app.exec_())
