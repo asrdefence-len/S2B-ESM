@@ -1,10 +1,11 @@
 # S2B ESM scripted emitter-type library.
 # Mode names are simulator truth and must not be passed directly to the ESM/S2B chain.
 # The scenario describes physical radar/antenna behaviour. ESM illumination must
-# emerge from antenna pointing, beam pattern and emitter geometry.
+# emerge from antenna pointing, beam pattern, propagation and emitter geometry.
 
 X_BAND_NAV_RADAR:
   description: X-band rotating navigation radar used for the first behaviour experiment
+  tx_peak_power_w: 100.0
 
   modes:
     NAV_SCAN:
@@ -17,6 +18,7 @@ X_BAND_NAV_RADAR:
         type: ROTATING
         pattern: SINC
         beamwidth_deg: 3.0
+        peak_gain_dbi: 25.0
         rpm: 30.0
 
     DWELL:
@@ -29,4 +31,23 @@ X_BAND_NAV_RADAR:
         type: FIXED
         pattern: SINC
         beamwidth_deg: 3.0
+        peak_gain_dbi: 25.0
         pointing: ESM_BEARING
+
+# Initial large-AESA class for later scripted scenarios.
+X_BAND_LARGE_AESA:
+  description: Higher-power X-band AESA class
+  tx_peak_power_w: 10000.0
+
+  modes:
+    SEARCH:
+      frequency_hz: 9.410e9
+      pri_us: 500.0
+      pw_us: 10.0
+      waveform: FM
+      bandwidth_hz: 10.0e6
+      antenna:
+        type: ELECTRONIC_SCAN
+        pattern: SINC
+        beamwidth_deg: 3.0
+        peak_gain_dbi: 30.0
