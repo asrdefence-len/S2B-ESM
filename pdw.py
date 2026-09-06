@@ -10,6 +10,7 @@ class PDW:
     pulse_width_s: float
     frequency_hz: float
     amplitude_dbfs: float
+    aoa_deg: float = 45.0
     modulation_type: str = "UNKNOWN"
     modulation_bandwidth_hz: float = 0.0
     modulation_confidence: float = 0.0
@@ -22,6 +23,7 @@ class PDW:
             f"TOA={self.toa_s:12.9f} s  "
             f"PW={self.pulse_width_s * 1e6:8.3f} us  "
             f"FREQ={self.frequency_hz / 1e6:10.3f} MHz  "
+            f"AOA={self.aoa_deg:6.1f} deg  "
             f"AMP={self.amplitude_dbfs:7.2f} dBFS  "
             f"MOD={self.modulation_type:11s}  "
             f"MC={100.0 * self.modulation_confidence:5.1f}%  "
