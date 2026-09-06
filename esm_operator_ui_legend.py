@@ -35,8 +35,8 @@ def _configure_axes_with_legend(self):
     self.axes.legend(
         handles=legend_items,
         title="ASSESSMENT",
-        loc="lower left",
-        bbox_to_anchor=(-0.12, -0.10),
+        loc="upper left",
+        bbox_to_anchor=(-0.12, 1.08),
         framealpha=0.92,
         fontsize=8,
         title_fontsize=8,
