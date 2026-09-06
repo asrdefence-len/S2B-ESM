@@ -1,4 +1,5 @@
 import sys
+import math
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication, QHBoxLayout, QLabel, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
@@ -12,21 +13,31 @@ class EnhancedPolarEmitterCanvas(PolarEmitterCanvas):
     def update_emitters(self, emitters, selected_index=0):
         super().update_emitters(emitters, selected_index)
         ax = self.axes
-        # Add a compact library identity below the normal emitter label.
+        # Put the compact library identity beside, rather than on top of, the symbol.
         counts = {}
         seen = {}
         for e in emitters:
             k = round(e["aoa_deg"], 1)
             counts[k] = counts.get(k, 0) + 1
         for e in emitters:
-            import math
             a = math.radians(e["aoa_deg"] % 360)
             k = round(e["aoa_deg"], 1)
             n = seen.get(k, 0)
             seen[k] = n + 1
             r = .78 if counts[k] == 1 else .60 + .18 * n
             lib = e.get("library_id", "UNKNOWN")
-            ax.text(a, min(r + .045, .94), lib, ha="center", va="center", fontsize=7, alpha=.82, zorder=4)
+
+            # Offset primarily in angle so the text sits alongside the symbol.
+            # Choose the side by bearing so labels tend to remain inside the plot.
+            bearing = e["aoa_deg"] % 360
+            offset_deg = -5.0 if 0 <= bearing < 180 else 5.0
+            label_a = a + math.radians(offset_deg)
+            ha = "right" if offset_deg < 0 else "left"
+            ax.text(
+                label_a, r, lib,
+                ha=ha, va="center", fontsize=5.5, alpha=.78,
+                fontweight="normal", zorder=4,
+            )
         self.draw_idle()
 
 
