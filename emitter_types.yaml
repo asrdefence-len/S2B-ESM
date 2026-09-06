@@ -1,0 +1,26 @@
+# S2B ESM scripted emitter-type library.
+# Mode names are simulator truth and must not be passed directly to the ESM/S2B chain.
+
+X_BAND_NAV_RADAR:
+  description: X-band rotating navigation radar used for the first behaviour experiment
+  beamwidth_deg: 3.0
+
+  modes:
+    NAV_SCAN:
+      frequency_hz: 9.410e9
+      pri_us: 1000.0
+      pw_us: 5.0
+      waveform: CW
+      bandwidth_hz: 0.0
+      antenna:
+        type: ROTATING
+        rpm: 30.0
+
+    DWELL:
+      frequency_hz: 9.410e9
+      pri_us: 500.0
+      pw_us: 7.0
+      waveform: FM
+      bandwidth_hz: 5.0e6
+      antenna:
+        type: FIXED
