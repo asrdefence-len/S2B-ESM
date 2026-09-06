@@ -2,7 +2,7 @@ import sys
 import math
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QApplication, QLabel, QTableWidget, QTableWidgetItem
+from PyQt5.QtWidgets import QApplication, QLabel, QTableWidget, QTableWidgetItem, QPushButton
 
 from emitter_library import EmitterLibrary
 from mode_history import ObservedModeHistory
@@ -28,11 +28,13 @@ class EnhancedS2BOperatorWindow(S2BOperatorWindow):
     def __init__(self):
         self.emitter_library=EmitterLibrary()
         self.mode_history=ObservedModeHistory(max_entries=10)
-        # Per-emitter identity memory. Confidence recovers gradually after an
-        # anomalous mode rather than snapping immediately back to 90%.
+        # Library identity memory is intentionally conservative. Once a previously
+        # good identification encounters contradictory behaviour, the degraded
+        # identity is latched until the operator explicitly confirms it.
         self.library_memory={}
         self.library_confidence_memory={}
-        self.library_last_time={}
+        self.library_degraded=set()
+        self.library_operator_confirmed=set()
         self._details_emitter_id=None
         super().__init__()
         self.setWindowTitle("S2B ESM - Operator Display"); self.resize(1750,1050); self.setMinimumSize(1250,760); self.details.setMinimumHeight(380)
@@ -43,51 +45,56 @@ class EnhancedS2BOperatorWindow(S2BOperatorWindow):
         self.mode_history_title=QLabel("RECENT OBSERVED MODES (1 s cells)"); self.mode_history_title.setStyleSheet("font-weight:700; margin-top:2px;")
         self.mode_history_table=QTableWidget(1,10); self.mode_history_table.setVerticalHeaderLabels(["MODE"]); self.mode_history_table.horizontalHeader().setVisible(False); self.mode_history_table.setFixedHeight(58); self.mode_history_table.setSelectionMode(QTableWidget.NoSelection); self.mode_history_table.setFocusPolicy(Qt.NoFocus)
         table_index=layout.indexOf(self.emitter_table); layout.insertWidget(table_index,self.mode_history_title); layout.insertWidget(table_index+1,self.mode_history_table)
+        self.confirm_library_button=QPushButton("CONFIRM LIBRARY ID"); self.confirm_library_button.clicked.connect(self._confirm_library_id); layout.insertWidget(table_index+2,self.confirm_library_button)
 
     def reset_system(self):
-        self.mode_history.clear(); self.library_memory.clear(); self.library_confidence_memory.clear(); self.library_last_time.clear(); self._details_emitter_id=None; super().reset_system()
+        self.mode_history.clear(); self.library_memory.clear(); self.library_confidence_memory.clear(); self.library_degraded.clear(); self.library_operator_confirmed.clear(); self._details_emitter_id=None; super().reset_system()
 
     def _scenario_changed(self,name):
-        self.mode_history.clear(); self.library_memory.clear(); self.library_confidence_memory.clear(); self.library_last_time.clear(); self._details_emitter_id=None; super()._scenario_changed(name)
+        self.mode_history.clear(); self.library_memory.clear(); self.library_confidence_memory.clear(); self.library_degraded.clear(); self.library_operator_confirmed.clear(); self._details_emitter_id=None; super()._scenario_changed(name)
 
     def _assign_library(self,e):
         c=e["current"]; illumination=e.get("illumination"); illumination_state=illumination.state if illumination is not None else None; eid=e["emitter_id"]
         previous_type=self.library_memory.get(eid)
         match=self.emitter_library.identify(c.get("frequency_hz"),c.get("pri_s"),c.get("modulation"),illumination_state,previous_type=previous_type)
 
-        # Use scenario time for the physical E3 chain; snapshots fall back to their
-        # own end time. This keeps confidence changes time-based, not refresh-rate based.
-        now=float(c.get("end_toa_s",0.0) or 0.0)
-        previous_conf=self.library_confidence_memory.get(eid)
-        previous_time=self.library_last_time.get(eid,now)
-        dt=max(0.0,now-previous_time)
-
-        lib_id=match.emitter_type
-        conf=match.confidence
-        reason=match.reason
-
-        if lib_id == "NAVRADAR":
-            if previous_type in ("NAVRADAR?","UNKNOWN") and previous_conf is not None:
-                # Full signature has returned, but identity confidence must rebuild.
-                # Recover at 5 percentage points per second to a 90% ceiling.
-                conf=min(0.90, max(previous_conf,0.50) + 0.05*dt)
-                lib_id="NAVRADAR" if conf >= 0.80 else "NAVRADAR?"
-                reason="Full NAVRADAR signature has returned; confidence is rebuilding after the recent mode deviation"
+        # A contradictory mode permanently degrades the automatic identity for this
+        # encounter. Returning to the original signature is supporting evidence, but
+        # does not erase the contradiction. Only an explicit operator confirmation
+        # restores the high-confidence library ID.
+        if eid in self.library_operator_confirmed:
+            lib_id="NAVRADAR"
+            conf=1.0
+            reason="NAVRADAR identity confirmed by operator"
+        elif eid in self.library_degraded:
+            lib_id="NAVRADAR?"
+            conf=0.40
+            if match.emitter_type == "NAVRADAR":
+                reason="Original NAVRADAR signature is visible again, but prior contradictory behaviour remains unresolved; operator confirmation required"
             else:
-                conf=0.90
-        elif lib_id == "NAVRADAR?":
-            # An unexpected mode should immediately reduce confidence, but not erase
-            # the physical-emitter identity hypothesis.
-            if previous_conf is not None:
-                conf=min(conf, max(0.50, previous_conf-0.20))
+                reason="Prior NAVRADAR match contradicted by observed behaviour; identity remains provisional until operator confirmation"
+        elif match.emitter_type == "NAVRADAR?":
+            self.library_degraded.add(eid)
+            lib_id="NAVRADAR?"
+            conf=0.40
+            reason="Previously matched NAVRADAR now shows behaviour outside the library signature; operator confirmation required"
         else:
-            conf=0.0
+            lib_id=match.emitter_type
+            conf=match.confidence
+            reason=match.reason
 
         e["library_id"]=lib_id; e["library_confidence"]=conf; e["library_reason"]=reason
-        self.library_memory[eid]=lib_id
-        self.library_confidence_memory[eid]=conf
-        self.library_last_time[eid]=now
+        self.library_memory[eid]=lib_id; self.library_confidence_memory[eid]=conf
         return e
+
+    def _confirm_library_id(self):
+        if not self.emitters:return
+        e=self.emitters[self.selected_emitter_index]; eid=e["emitter_id"]
+        # For this demonstrator the only named library entry is NAVRADAR. Confirmation
+        # is allowed only when NAVRADAR is already the current/provisional hypothesis.
+        if e.get("library_id") not in ("NAVRADAR","NAVRADAR?"):return
+        self.library_operator_confirmed.add(eid); self.library_degraded.discard(eid)
+        self._assign_library(e); self._populate_table(); self.polar.update_emitters(self.emitters,self.selected_emitter_index); self._show_selected_emitter(); self._update_mode_history_display()
 
     def _refresh(self):
         super()._refresh()
@@ -120,6 +127,10 @@ class EnhancedS2BOperatorWindow(S2BOperatorWindow):
             elif label=="DWELL":item.setBackground(Qt.yellow)
             self.mode_history_table.setItem(0,col,item)
         self.mode_history_title.setText(f"{e['emitter_id']} / {e.get('library_id','UNKNOWN')} - RECENT OBSERVED MODES (last 10 s, newest at right)")
+        if hasattr(self,"confirm_library_button"):
+            provisional=e.get("library_id")=="NAVRADAR?"
+            self.confirm_library_button.setEnabled(provisional)
+            self.confirm_library_button.setText("CONFIRM NAVRADAR ID" if provisional else "LIBRARY ID CONFIRMED" if e["emitter_id"] in self.library_operator_confirmed else "CONFIRM LIBRARY ID")
 
     def _show_selected_emitter(self):
         if not self.emitters:
