@@ -14,13 +14,27 @@ class IlluminationAssessment:
     continuous_illumination_s: float = 0.0
     last_peak_time_s: float | None = None
     peak_count: int = 0
+    system_assessment: str = "UNASSESSED"
+    baseline_state: str | None = None
+    baseline_confidence: float = 0.0
+    recent_change_from: str | None = None
+    recent_change_to: str | None = None
+    recent_change_time_s: float | None = None
 
 
 class EmitterIlluminationTracker:
     """Compact per-physical-emitter amplitude/illumination history.
 
-    The tracker consumes low-rate amplitude observations rather than IQ. This is
-    deliberate: one small tracker can be maintained for every physical emitter.
+    The tracker consumes low-rate amplitude observations rather than IQ. One small
+    tracker can therefore be maintained for every persistent physical emitter.
+
+    Baseline logic is deliberately conservative:
+      * startup learning is UNASSESSED, not CHANGED;
+      * PERIODIC_SCAN becomes the baseline only when evidence is > 50%;
+      * after a baseline exists, a different resolved state must also exceed 50%
+        evidence before the system reports CHANGED;
+      * CHANGED is transient. If the new state persists for change_hold_s, it
+        becomes the new baseline and the emitter returns to MONITOR.
     """
 
     def __init__(
@@ -30,18 +44,33 @@ class EmitterIlluminationTracker:
         persistent_s=1.0,
         peak_separation_s=0.25,
         period_tolerance_fraction=0.15,
+        baseline_confidence_threshold=0.50,
+        change_confidence_threshold=0.50,
+        change_hold_s=5.0,
     ):
         self.history_s = float(history_s)
         self.illumination_threshold_db = float(illumination_threshold_db)
         self.persistent_s = float(persistent_s)
         self.peak_separation_s = float(peak_separation_s)
         self.period_tolerance_fraction = float(period_tolerance_fraction)
+        self.baseline_confidence_threshold = float(baseline_confidence_threshold)
+        self.change_confidence_threshold = float(change_confidence_threshold)
+        self.change_hold_s = float(change_hold_s)
+
         self.samples = deque()
         self.peaks = deque()
         self._in_illumination = False
         self._illumination_start_s = None
         self._peak_time_s = None
         self._peak_amp_db = -math.inf
+
+        self._baseline_state = None
+        self._baseline_confidence = 0.0
+        self._candidate_change_state = None
+        self._candidate_change_start_s = None
+        self._recent_change_from = None
+        self._recent_change_to = None
+        self._recent_change_time_s = None
 
     def update(self, time_s, amplitude_db):
         time_s = float(time_s)
@@ -77,10 +106,7 @@ class EmitterIlluminationTracker:
         self._peak_time_s = None
         self._peak_amp_db = -math.inf
 
-    def assess(self, now_s=None):
-        if now_s is None:
-            now_s = self.samples[-1][0] if self.samples else 0.0
-
+    def _observable_assessment(self, now_s):
         continuous_s = 0.0
         if self._in_illumination and self._illumination_start_s is not None:
             continuous_s = max(0.0, float(now_s) - self._illumination_start_s)
@@ -88,20 +114,29 @@ class EmitterIlluminationTracker:
         amps = [a for _, a in self.samples]
         modulation_depth = max(amps) - min(amps) if len(amps) >= 2 else 0.0
 
-        intervals = [b - a for a, b in zip(self.peaks, list(self.peaks)[1:])]
+        peak_list = list(self.peaks)
+        intervals = [b - a for a, b in zip(peak_list, peak_list[1:])]
         period = None
         confidence = 0.0
         if len(intervals) >= 2:
             period = statistics.median(intervals)
             if period > 0.0:
                 deviations = [abs(x - period) / period for x in intervals]
-                consistency = max(0.0, 1.0 - statistics.median(deviations) / self.period_tolerance_fraction)
+                consistency = max(
+                    0.0,
+                    1.0
+                    - statistics.median(deviations)
+                    / self.period_tolerance_fraction,
+                )
                 evidence = min(1.0, len(intervals) / 4.0)
                 confidence = consistency * evidence
 
         if continuous_s >= self.persistent_s:
             state = "PERSISTENT_ILLUMINATION"
-            confidence = max(confidence, min(1.0, continuous_s / (2.0 * self.persistent_s)))
+            confidence = max(
+                confidence,
+                min(1.0, continuous_s / (2.0 * self.persistent_s)),
+            )
         elif period is not None and confidence >= 0.45:
             state = "PERIODIC_SCAN"
         elif len(self.samples) < 3:
@@ -111,15 +146,88 @@ class EmitterIlluminationTracker:
 
         rpm = None if period is None or period <= 0.0 else 60.0 / period
         last_peak = self.peaks[-1] if self.peaks else self._peak_time_s
+        return {
+            "state": state,
+            "scan_period_s": period,
+            "scan_rate_rpm": rpm,
+            "confidence": confidence,
+            "modulation_depth_db": modulation_depth,
+            "continuous_illumination_s": continuous_s,
+            "last_peak_time_s": last_peak,
+            "peak_count": len(self.peaks),
+        }
+
+    def _update_system_assessment(self, now_s, observable):
+        state = observable["state"]
+        confidence = observable["confidence"]
+
+        # Startup acquisition: learning the first periodic pattern is not a change.
+        if self._baseline_state is None:
+            if (
+                state == "PERIODIC_SCAN"
+                and confidence > self.baseline_confidence_threshold
+            ):
+                self._baseline_state = state
+                self._baseline_confidence = confidence
+                self._candidate_change_state = None
+                self._candidate_change_start_s = None
+                return "MONITOR"
+            return "UNASSESSED"
+
+        # Normal continuation of the established baseline.
+        if state == self._baseline_state:
+            self._baseline_confidence = max(self._baseline_confidence, confidence)
+            self._candidate_change_state = None
+            self._candidate_change_start_s = None
+            return "MONITOR"
+
+        # Do not alert on weak or unresolved deviations from the baseline.
+        if (
+            state in ("UNRESOLVED", "INTERMITTENT")
+            or confidence <= self.change_confidence_threshold
+        ):
+            self._candidate_change_state = None
+            self._candidate_change_start_s = None
+            return "MONITOR"
+
+        # A credible new observable mode has appeared.
+        if self._candidate_change_state != state:
+            self._candidate_change_state = state
+            self._candidate_change_start_s = float(now_s)
+            self._recent_change_from = self._baseline_state
+            self._recent_change_to = state
+            self._recent_change_time_s = float(now_s)
+            return "CHANGED"
+
+        # Keep CHANGED visible while the new mode establishes itself. Once stable,
+        # adopt it as the new baseline and return to MONITOR.
+        if (
+            self._candidate_change_start_s is not None
+            and float(now_s) - self._candidate_change_start_s >= self.change_hold_s
+        ):
+            self._baseline_state = state
+            self._baseline_confidence = confidence
+            self._candidate_change_state = None
+            self._candidate_change_start_s = None
+            return "MONITOR"
+
+        return "CHANGED"
+
+    def assess(self, now_s=None):
+        if now_s is None:
+            now_s = self.samples[-1][0] if self.samples else 0.0
+
+        observable = self._observable_assessment(now_s)
+        system_assessment = self._update_system_assessment(now_s, observable)
+
         return IlluminationAssessment(
-            state=state,
-            scan_period_s=period,
-            scan_rate_rpm=rpm,
-            confidence=confidence,
-            modulation_depth_db=modulation_depth,
-            continuous_illumination_s=continuous_s,
-            last_peak_time_s=last_peak,
-            peak_count=len(self.peaks),
+            **observable,
+            system_assessment=system_assessment,
+            baseline_state=self._baseline_state,
+            baseline_confidence=self._baseline_confidence,
+            recent_change_from=self._recent_change_from,
+            recent_change_to=self._recent_change_to,
+            recent_change_time_s=self._recent_change_time_s,
         )
 
 
