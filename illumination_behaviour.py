@@ -20,6 +20,8 @@ class IlluminationAssessment:
     recent_change_from: str | None = None
     recent_change_to: str | None = None
     recent_change_time_s: float | None = None
+    previous_scan_period_s: float | None = None
+    previous_scan_rate_rpm: float | None = None
 
 
 class EmitterIlluminationTracker:
@@ -35,6 +37,11 @@ class EmitterIlluminationTracker:
         evidence before the system reports CHANGED;
       * CHANGED is transient. If the new state persists for change_hold_s, it
         becomes the new baseline and the emitter returns to MONITOR.
+
+    Current-state reporting is kept separate from historical evidence. When the
+    current observable state is PERSISTENT_ILLUMINATION, scan_period_s and
+    scan_rate_rpm are intentionally cleared; the most recent periodic estimate is
+    retained in previous_scan_period_s / previous_scan_rate_rpm instead.
     """
 
     def __init__(
@@ -71,6 +78,9 @@ class EmitterIlluminationTracker:
         self._recent_change_from = None
         self._recent_change_to = None
         self._recent_change_time_s = None
+
+        self._last_periodic_period_s = None
+        self._last_periodic_rate_rpm = None
 
     def update(self, time_s, amplitude_db):
         time_s = float(time_s)
@@ -117,7 +127,7 @@ class EmitterIlluminationTracker:
         peak_list = list(self.peaks)
         intervals = [b - a for a, b in zip(peak_list, peak_list[1:])]
         period = None
-        confidence = 0.0
+        periodic_confidence = 0.0
         if len(intervals) >= 2:
             period = statistics.median(intervals)
             if period > 0.0:
@@ -129,39 +139,52 @@ class EmitterIlluminationTracker:
                     / self.period_tolerance_fraction,
                 )
                 evidence = min(1.0, len(intervals) / 4.0)
-                confidence = consistency * evidence
+                periodic_confidence = consistency * evidence
 
         if continuous_s >= self.persistent_s:
             state = "PERSISTENT_ILLUMINATION"
             confidence = max(
-                confidence,
+                periodic_confidence,
                 min(1.0, continuous_s / (2.0 * self.persistent_s)),
             )
-        elif period is not None and confidence >= 0.45:
+            current_period = None
+            current_rpm = None
+        elif period is not None and periodic_confidence >= 0.45:
             state = "PERIODIC_SCAN"
+            confidence = periodic_confidence
+            current_period = period
+            current_rpm = 60.0 / period if period > 0.0 else None
+            self._last_periodic_period_s = current_period
+            self._last_periodic_rate_rpm = current_rpm
         elif len(self.samples) < 3:
             state = "UNRESOLVED"
+            confidence = periodic_confidence
+            current_period = None
+            current_rpm = None
         else:
             state = "INTERMITTENT"
+            confidence = periodic_confidence
+            current_period = None
+            current_rpm = None
 
-        rpm = None if period is None or period <= 0.0 else 60.0 / period
         last_peak = self.peaks[-1] if self.peaks else self._peak_time_s
         return {
             "state": state,
-            "scan_period_s": period,
-            "scan_rate_rpm": rpm,
+            "scan_period_s": current_period,
+            "scan_rate_rpm": current_rpm,
             "confidence": confidence,
             "modulation_depth_db": modulation_depth,
             "continuous_illumination_s": continuous_s,
             "last_peak_time_s": last_peak,
             "peak_count": len(self.peaks),
+            "previous_scan_period_s": self._last_periodic_period_s,
+            "previous_scan_rate_rpm": self._last_periodic_rate_rpm,
         }
 
     def _update_system_assessment(self, now_s, observable):
         state = observable["state"]
         confidence = observable["confidence"]
 
-        # Startup acquisition: learning the first periodic pattern is not a change.
         if self._baseline_state is None:
             if (
                 state == "PERIODIC_SCAN"
@@ -174,14 +197,12 @@ class EmitterIlluminationTracker:
                 return "MONITOR"
             return "UNASSESSED"
 
-        # Normal continuation of the established baseline.
         if state == self._baseline_state:
             self._baseline_confidence = max(self._baseline_confidence, confidence)
             self._candidate_change_state = None
             self._candidate_change_start_s = None
             return "MONITOR"
 
-        # Do not alert on weak or unresolved deviations from the baseline.
         if (
             state in ("UNRESOLVED", "INTERMITTENT")
             or confidence <= self.change_confidence_threshold
@@ -190,7 +211,6 @@ class EmitterIlluminationTracker:
             self._candidate_change_start_s = None
             return "MONITOR"
 
-        # A credible new observable mode has appeared.
         if self._candidate_change_state != state:
             self._candidate_change_state = state
             self._candidate_change_start_s = float(now_s)
@@ -199,8 +219,6 @@ class EmitterIlluminationTracker:
             self._recent_change_time_s = float(now_s)
             return "CHANGED"
 
-        # Keep CHANGED visible while the new mode establishes itself. Once stable,
-        # adopt it as the new baseline and return to MONITOR.
         if (
             self._candidate_change_start_s is not None
             and float(now_s) - self._candidate_change_start_s >= self.change_hold_s
