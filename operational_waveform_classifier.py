@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from physics_waveform_frontend_v6 import PhysicsWaveformFrontendV6
+from physics_waveform_frontend_v7 import PhysicsWaveformFrontendV7
 
 
 @dataclass(frozen=True)
@@ -29,15 +29,18 @@ class OperationalWaveformClassifier:
     Exact waveform fingerprinting is deferred. The underlying phase and frequency
     observables are retained so later S2B change detection can still see waveform
     changes inside a broad family.
+
+    V7 is numerically regression-equivalent to V6 on measured pulse snippets, but
+    replaces the expensive sliding least-squares local-frequency estimator with a
+    vectorized closed-form implementation.
     """
 
     def __init__(self, sample_rate_hz=40_000_000.0):
-        self.frontend = PhysicsWaveformFrontendV6(sample_rate_hz)
+        self.frontend = PhysicsWaveformFrontendV7(sample_rate_hz)
 
     def classify(self, samples):
         r = self.frontend.classify(samples)
 
-        # Collapse all frequency-varying classes into FM for the present ESM.
         fm_score = max(
             float(r.scores.get("FM", 0.0)),
             float(r.scores.get("FREQUENCY_CODED", 0.0)),
@@ -54,8 +57,6 @@ class OperationalWaveformClassifier:
         second = ordered[1] if len(ordered) > 1 else 0.0
         margin = best - second
 
-        # Keep UNKNOWN conservative: use it when no supported broad family gives
-        # adequate evidence or when all evidence remains weakly ambiguous.
         if best < 0.20 or (best < 0.38 and margin < 0.04):
             family = "UNKNOWN"
 
