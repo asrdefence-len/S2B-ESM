@@ -1,9 +1,10 @@
 # S2B ESM scripted emitter-type library.
 # Mode names are simulator truth and must not be passed directly to the ESM/S2B chain.
+# The scenario describes physical radar/antenna behaviour. ESM illumination must
+# emerge from antenna pointing, beam pattern and emitter geometry.
 
 X_BAND_NAV_RADAR:
   description: X-band rotating navigation radar used for the first behaviour experiment
-  beamwidth_deg: 3.0
 
   modes:
     NAV_SCAN:
@@ -14,6 +15,8 @@ X_BAND_NAV_RADAR:
       bandwidth_hz: 0.0
       antenna:
         type: ROTATING
+        pattern: SINC
+        beamwidth_deg: 3.0
         rpm: 30.0
 
     DWELL:
@@ -24,3 +27,6 @@ X_BAND_NAV_RADAR:
       bandwidth_hz: 5.0e6
       antenna:
         type: FIXED
+        pattern: SINC
+        beamwidth_deg: 3.0
+        pointing: ESM_BEARING
