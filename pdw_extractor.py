@@ -5,9 +5,10 @@ from operational_waveform_classifier_cyclic import CyclicOperationalWaveformClas
 
 
 class PDWExtractor:
-    def __init__(self, sample_rate_hz, center_frequency_hz):
+    def __init__(self, sample_rate_hz, center_frequency_hz, default_aoa_deg=45.0):
         self.sample_rate_hz = sample_rate_hz
         self.center_frequency_hz = center_frequency_hz
+        self.default_aoa_deg = float(default_aoa_deg) % 360.0
         self.next_pdw_id = 1
         self.waveform_classifier = CyclicOperationalWaveformClassifier(sample_rate_hz)
 
@@ -61,6 +62,7 @@ class PDWExtractor:
             pulse_width_s=pulse_width_s,
             frequency_hz=frequency_hz,
             amplitude_dbfs=amplitude_dbfs,
+            aoa_deg=self.default_aoa_deg,
             modulation_type=waveform.family,
             modulation_bandwidth_hz=modulation_bandwidth_hz,
             modulation_confidence=waveform.confidence,
