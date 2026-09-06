@@ -13,12 +13,7 @@ class PDWExtractor:
         self.waveform_classifier = CyclicOperationalWaveformClassifier(sample_rate_hz)
 
     def _fit_phase_model(self, pulse_iq):
-        """Fit phase(t) = a*t^2 + b*t + c for RF frequency/BW observables.
-
-        Waveform family classification is deliberately separate and is performed
-        by CyclicOperationalWaveformClassifier. The quadratic fit remains useful
-        as a cheap centre-frequency and swept-bandwidth measurement.
-        """
+        """Fit phase(t) = a*t^2 + b*t + c for RF frequency/BW observables."""
         if len(pulse_iq) < 8:
             return None
 
@@ -39,12 +34,19 @@ class PDWExtractor:
         swept_bandwidth_hz = abs(chirp_rate_hz_per_s) * pulse_width_s
         return float(center_frequency_offset_hz), float(swept_bandwidth_hz)
 
-    def extract(self, iq, pulse):
+    def extract(self, iq, pulse, block_start_time_s=0.0, aoa_deg=None):
+        """Extract a PDW from one detected pulse in an IQ block.
+
+        block_start_time_s makes TOA absolute for streaming operation while
+        preserving the old snapshot behaviour when omitted. aoa_deg is an
+        optional external AOA measurement; until a multi-channel AOA processor
+        exists the configured default remains available.
+        """
         start = pulse["start_sample"]
         stop = pulse["stop_sample"]
         pulse_iq = iq[start:stop]
 
-        toa_s = start / self.sample_rate_hz
+        toa_s = float(block_start_time_s) + start / self.sample_rate_hz
         pulse_width_s = (stop - start) / self.sample_rate_hz
 
         amplitude_linear = np.sqrt(np.mean(np.abs(pulse_iq) ** 2))
@@ -56,13 +58,15 @@ class PDWExtractor:
         waveform = self.waveform_classifier.classify(pulse_iq)
         frequency_hz = self.center_frequency_hz + frequency_offset_hz
 
+        measured_aoa_deg = self.default_aoa_deg if aoa_deg is None else float(aoa_deg) % 360.0
+
         pdw = PDW(
             pdw_id=self.next_pdw_id,
             toa_s=toa_s,
             pulse_width_s=pulse_width_s,
             frequency_hz=frequency_hz,
             amplitude_dbfs=amplitude_dbfs,
-            aoa_deg=self.default_aoa_deg,
+            aoa_deg=measured_aoa_deg,
             modulation_type=waveform.family,
             modulation_bandwidth_hz=modulation_bandwidth_hz,
             modulation_confidence=waveform.confidence,
