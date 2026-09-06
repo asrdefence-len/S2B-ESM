@@ -10,6 +10,7 @@ from pathlib import Path
 
 from beam_model import RotatingSincBeam, wrap_angle_deg
 from scenario_runtime import ScenarioRuntime
+from scripted_antenna_motion import ScriptedAntennaMotion
 
 
 C_MPS = 299_792_458.0
@@ -25,41 +26,25 @@ def free_space_path_loss_db(frequency_hz, range_km):
     return 20.0 * math.log10(4.0 * math.pi * range_m / wavelength_m)
 
 
-def antenna_state(runtime_state, time_s):
+def antenna_state(runtime_state, motion_state, time_s):
     antenna = runtime_state.mode.get("antenna", {})
-    antenna_type = str(antenna.get("type", "UNKNOWN")).upper()
+    antenna_type = motion_state.antenna_type
     beamwidth_deg = float(antenna.get("beamwidth_deg", 3.0))
     pattern = str(antenna.get("pattern", "SINC")).upper()
 
     if pattern != "SINC":
         raise ValueError(f"Unsupported antenna pattern for this test: {pattern}")
 
-    if antenna_type == "ROTATING":
-        beam = RotatingSincBeam(
-            beamwidth_deg=beamwidth_deg,
-            scan_rate_rpm=float(antenna.get("rpm", 0.0)),
-            initial_azimuth_deg=runtime_state.initial_antenna_azimuth_deg,
-            sidelobe_floor_db=-50.0,
-        )
-    elif antenna_type == "FIXED":
-        pointing = antenna.get("pointing", "ESM_BEARING")
-        pointing_deg = (
-            runtime_state.aoa_deg
-            if str(pointing).upper() == "ESM_BEARING"
-            else float(pointing)
-        )
-        beam = RotatingSincBeam(
-            beamwidth_deg=beamwidth_deg,
-            scan_rate_rpm=0.0,
-            fixed_azimuth_deg=pointing_deg,
-            sidelobe_floor_db=-50.0,
-        )
-    else:
-        raise ValueError(f"Unsupported antenna type: {antenna_type}")
-
-    azimuth_deg = beam.azimuth_deg(time_s)
+    # Motion is handled by ScriptedAntennaMotion. Here the beam is fixed at the
+    # already-propagated physical azimuth solely to evaluate the pattern gain.
+    beam = RotatingSincBeam(
+        beamwidth_deg=beamwidth_deg,
+        scan_rate_rpm=0.0,
+        fixed_azimuth_deg=motion_state.azimuth_deg,
+        sidelobe_floor_db=-50.0,
+    )
     relative_pattern_db = beam.gain_db(runtime_state.aoa_deg, time_s)
-    return antenna_type, azimuth_deg, relative_pattern_db
+    return antenna_type, motion_state.azimuth_deg, relative_pattern_db
 
 
 def received_power_dbm(runtime, runtime_state, relative_pattern_db):
@@ -80,13 +65,14 @@ def main():
     )
 
     emitter_id = "E3"
+    motion = ScriptedAntennaMotion(runtime, emitter_id)
     noise_dbm = float(runtime.esm_receiver["noise_floor_dbm"])
     threshold_dbm = float(runtime.esm_receiver["detection_threshold_dbm"])
     state0 = runtime.state(emitter_id, 0.0)
 
     print("S2B SCRIPTED RADAR PHYSICAL OBSERVATION TEST")
     print("===========================================")
-    print("Illumination is derived from antenna motion, propagation and ESM threshold.")
+    print("Illumination is derived from continuous antenna motion, propagation and ESM threshold.")
     print(
         f"{emitter_id}: range={state0.range_km:.1f} km, "
         f"Tx={state0.tx_peak_power_w:.0f} W ({watts_to_dbm(state0.tx_peak_power_w):.1f} dBm), "
@@ -95,13 +81,11 @@ def main():
     print(f"ESM noise floor={noise_dbm:.1f} dBm, detection threshold={threshold_dbm:.1f} dBm")
     print()
 
-    # With initial azimuth 20 deg and 30 RPM, the first 135 deg crossing is
-    # (135-20)/180 = 0.6389 s. Samples deliberately straddle beam crossings.
     sample_times = [
         0.00, 0.60, 0.62, 0.63, 0.635, 0.639, 0.643, 0.65, 0.66, 0.70, 1.00,
         2.62, 2.63, 2.635, 2.639, 2.643, 2.65, 2.66,
         14.90, 14.99, 15.00, 15.10, 16.00,
-        24.90, 24.99, 25.00, 25.10, 25.60, 25.635, 25.639, 25.643, 25.66, 26.00,
+        24.90, 24.99, 25.00, 25.01, 25.02, 25.05, 25.10, 25.50, 26.00,
     ]
 
     print("time    mode      ant       ant_az   delta   pattern      Prx    SNR   DET")
@@ -110,7 +94,8 @@ def main():
 
     for time_s in sample_times:
         state = runtime.state(emitter_id, time_s)
-        antenna_type, azimuth_deg, pattern_db = antenna_state(state, time_s)
+        motion_state = motion.state(time_s)
+        antenna_type, azimuth_deg, pattern_db = antenna_state(state, motion_state, time_s)
         delta_deg = wrap_angle_deg(state.aoa_deg - azimuth_deg)
         prx_dbm = received_power_dbm(runtime, state, pattern_db)
         snr_db = prx_dbm - noise_dbm
@@ -135,9 +120,9 @@ def main():
     print(f"  Threshold margin    {peak_prx - threshold_dbm:8.2f} dB")
     print()
     print("Expected behaviour:")
-    print("  * NAV_SCAN produces detections only while the rotating beam is strong enough.")
-    print("  * At 15 s the fixed dwell points at the ESM, producing persistent detection.")
-    print("  * At 25 s rotation resumes, so detections again become periodic.")
+    print("  * NAV_SCAN rotates continuously from the antenna's current physical azimuth.")
+    print("  * At 15 s DWELL slews to and holds the ESM bearing at 135 deg.")
+    print("  * At 25 s NAV_SCAN resumes rotation from 135 deg, not from an absolute-time phase.")
 
 
 if __name__ == "__main__":
