@@ -45,10 +45,14 @@ class EnhancedS2BOperatorWindow(S2BOperatorWindow):
     def __init__(self):
         self.emitter_library = EmitterLibrary()
         self.mode_history = ObservedModeHistory(max_entries=18)
+        self._details_emitter_id = None
         super().__init__()
         self.setWindowTitle("S2B ESM - Operator Display")
         self.resize(1750, 1050)
         self.setMinimumSize(1250, 760)
+        # The details pane updates continuously. Give it enough room to be useful,
+        # while still retaining the notes area below it.
+        self.details.setMinimumHeight(380)
 
     def _build_ui(self):
         # Build the proven base UI first, then replace/enhance only the left-side displays.
@@ -83,10 +87,12 @@ class EnhancedS2BOperatorWindow(S2BOperatorWindow):
 
     def reset_system(self):
         self.mode_history.clear()
+        self._details_emitter_id = None
         super().reset_system()
 
     def _scenario_changed(self, name):
         self.mode_history.clear()
+        self._details_emitter_id = None
         super()._scenario_changed(name)
 
     def _assign_library(self, emitter):
@@ -133,6 +139,11 @@ class EnhancedS2BOperatorWindow(S2BOperatorWindow):
             self.emitter_table.selectRow(self.selected_emitter_index)
 
     def _emitter_selected(self, row, column):
+        # A newly selected emitter should start its details pane at the top.
+        if self.emitters and 0 <= row < len(self.emitters):
+            new_id = self.emitters[row]["emitter_id"]
+            if new_id != self._details_emitter_id:
+                self._details_emitter_id = None
         super()._emitter_selected(row, column)
         self._update_mode_history_display()
 
@@ -159,10 +170,20 @@ class EnhancedS2BOperatorWindow(S2BOperatorWindow):
         )
 
     def _show_selected_emitter(self):
-        super()._show_selected_emitter()
         if not self.emitters:
+            super()._show_selected_emitter()
+            self._details_emitter_id = None
             return
+
         e = self.emitters[self.selected_emitter_index]
+        eid = e["emitter_id"]
+        scrollbar = self.details.verticalScrollBar()
+        same_emitter = eid == self._details_emitter_id
+        previous_scroll = scrollbar.value() if same_emitter else 0
+
+        # Base class refreshes the dynamic observed-state text.
+        super()._show_selected_emitter()
+
         lib = e.get("library_id", "UNKNOWN")
         conf = 100.0 * e.get("library_confidence", 0.0)
         reason = e.get("library_reason", "No library evidence")
@@ -170,11 +191,19 @@ class EnhancedS2BOperatorWindow(S2BOperatorWindow):
         prefix = (
             "EMITTER LIBRARY\n"
             "---------------\n"
-            f"Library ID       : {lib}\n"
-            f"Library confidence: {conf:.1f}%\n"
-            f"Match evidence   : {reason}\n\n"
+            f"ID / confidence  : {lib} / {conf:.0f}%\n"
+            f"Evidence         : {reason}\n\n"
         )
         self.details.setPlainText(prefix + existing)
+
+        # The pane is refreshed every 750 ms. Without this restore, setPlainText()
+        # snaps the scrollbar to the top continuously and makes manual scrolling
+        # effectively impossible. Preserve position while the same emitter remains selected.
+        if same_emitter:
+            scrollbar.setValue(min(previous_scroll, scrollbar.maximum()))
+        else:
+            scrollbar.setValue(0)
+        self._details_emitter_id = eid
 
 
 def main():
