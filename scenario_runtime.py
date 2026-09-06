@@ -22,7 +22,8 @@ class EmitterRuntimeState:
     emitter_id: str
     emitter_type: str
     aoa_deg: float
-    peak_level_dbfs: float
+    range_km: float
+    tx_peak_power_w: float
     initial_antenna_azimuth_deg: float
     active_mode: str
     mode: dict[str, Any]
@@ -36,6 +37,7 @@ class ScenarioRuntime:
         self.emitter_types = self._load_yaml(self.emitter_types_path)
         self.document = self._load_yaml(self.scenario_path)
         self.scenario = self.document.get("scenario", {})
+        self.esm_receiver = self.document.get("esm_receiver", {})
         self.emitters = self.document.get("emitters", [])
         self._validate()
 
@@ -74,6 +76,10 @@ class ScenarioRuntime:
             ids.add(emitter_id)
             if emitter_type not in self.emitter_types:
                 raise ValueError(f"{emitter_id}: unknown emitter type {emitter_type}")
+            if float(emitter.get("range_km", 0.0)) <= 0.0:
+                raise ValueError(f"{emitter_id}: range_km must be positive")
+            if float(self.emitter_types[emitter_type].get("tx_peak_power_w", 0.0)) <= 0.0:
+                raise ValueError(f"{emitter_type}: tx_peak_power_w must be positive")
 
             modes = self.emitter_types[emitter_type].get("modes", {})
             timeline = emitter.get("timeline", [])
@@ -109,13 +115,15 @@ class ScenarioRuntime:
                 break
 
         emitter_type = str(emitter["type"])
+        emitter_definition = self.emitter_types[emitter_type]
         mode_name = str(event["mode"])
-        mode = dict(self.emitter_types[emitter_type]["modes"][mode_name])
+        mode = dict(emitter_definition["modes"][mode_name])
         return EmitterRuntimeState(
             emitter_id=str(emitter["id"]),
             emitter_type=emitter_type,
             aoa_deg=float(emitter.get("aoa_deg", 0.0)),
-            peak_level_dbfs=float(emitter.get("peak_level_dbfs", -6.0)),
+            range_km=float(emitter["range_km"]),
+            tx_peak_power_w=float(emitter_definition["tx_peak_power_w"]),
             initial_antenna_azimuth_deg=float(
                 emitter.get("initial_antenna_azimuth_deg", 0.0)
             ),
@@ -135,7 +143,7 @@ def _format_state(state):
         antenna_text += f" {float(antenna.get('rpm', 0.0)):.1f} RPM"
     return (
         f"{state.emitter_id}: mode={state.active_mode:<8} "
-        f"AOA={state.aoa_deg:6.1f} deg  "
+        f"AOA={state.aoa_deg:6.1f} deg  R={state.range_km:5.1f} km  "
         f"RF={float(state.mode['frequency_hz']) / 1e9:.3f} GHz  "
         f"PRI={float(state.mode['pri_us']):7.1f} us  "
         f"PW={float(state.mode['pw_us']):5.1f} us  "
