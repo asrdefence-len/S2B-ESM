@@ -1,6 +1,6 @@
 scenario:
   name: nav_scan_to_dwell
-  description: E3 establishes a 30 RPM periodic scan, dwells on the ESM bearing, then resumes scanning
+  description: E3 rotates continuously, later changes to a fixed dwell, then resumes rotation
   duration_s: 35.0
 
 emitters:
@@ -8,6 +8,10 @@ emitters:
     type: X_BAND_NAV_RADAR
     aoa_deg: 135.0
     peak_level_dbfs: -6.0
+
+    # Physical initial condition. This determines when the rotating beam happens
+    # to cross the ESM bearing; the scenario does not script illumination times.
+    initial_antenna_azimuth_deg: 20.0
 
     timeline:
       - time_s: 0.0
