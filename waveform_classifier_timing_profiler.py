@@ -1,7 +1,7 @@
 """Profile the expensive pieces of the operational cyclic waveform classifier.
 
 Uses real detected pulse snippets from the unified 40 MS/s stream, then times
-classifier internals repeatedly without changing production classifier code.
+the current production V7 physics frontend and cyclic classifier internals.
 """
 
 import argparse
@@ -12,7 +12,7 @@ import numpy as np
 from config import DETECTION_THRESHOLD, MIN_PULSE_WIDTH_S, SAMPLE_RATE_HZ
 from cyclostationary_waveform_diagnostic import cyclic_features
 from operational_waveform_classifier_cyclic import CyclicOperationalWaveformClassifier
-from physics_waveform_frontend_v6 import PhysicsWaveformFrontendV6
+from physics_waveform_frontend_v7 import PhysicsWaveformFrontendV7
 from pulse_detector import PulseDetector
 from simulated_streaming_source import SimulatedStreamingIQSource
 
@@ -42,7 +42,6 @@ def collect_pulses(target):
 
 
 def timed(fn, snippets, repeats):
-    # Warm NumPy dispatch/caches before measuring.
     for x in snippets[:min(10, len(snippets))]:
         fn(x)
     t0 = time.perf_counter()
@@ -56,17 +55,15 @@ def timed(fn, snippets, repeats):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Profile waveform-classifier internals")
-    parser.add_argument("--pulses", type=int, default=300,
-                        help="number of real detected pulse snippets to profile")
-    parser.add_argument("--repeats", type=int, default=3,
-                        help="repeat passes over snippets")
+    parser = argparse.ArgumentParser(description="Profile current V7 waveform-classifier internals")
+    parser.add_argument("--pulses", type=int, default=300)
+    parser.add_argument("--repeats", type=int, default=3)
     args = parser.parse_args()
     count = max(20, args.pulses)
     repeats = max(1, args.repeats)
 
-    print("S2B WAVEFORM CLASSIFIER INTERNAL TIMING PROFILER")
-    print("================================================")
+    print("S2B WAVEFORM CLASSIFIER V7 INTERNAL TIMING PROFILER")
+    print("===================================================")
     print("Collecting pulse snippets from the unified 40 MS/s detector...")
     snippets = collect_pulses(count)
     lengths = np.asarray([len(x) for x in snippets])
@@ -74,12 +71,12 @@ def main():
     print(f"Samples/pulse      : min={lengths.min()} median={np.median(lengths):.0f} max={lengths.max()}")
     print(f"Repeated passes    : {repeats}\n")
 
-    frontend = PhysicsWaveformFrontendV6(SAMPLE_RATE_HZ)
+    frontend = PhysicsWaveformFrontendV7(SAMPLE_RATE_HZ)
     full = CyclicOperationalWaveformClassifier(SAMPLE_RATE_HZ)
 
     stages = []
     for name, fn in (
-        ("Physics frontend V6", frontend.classify),
+        ("Physics frontend V7", frontend.classify),
         ("Cyclic features x2/x4/env", cyclic_features),
         ("Full cyclic operational", full.classify),
     ):
@@ -98,55 +95,47 @@ def main():
     overhead_us = max(0.0, full_us - front_us - cyclic_us)
 
     print("\nApproximate decomposition per pulse")
-    print(f"  Physics frontend       : {front_us:9.1f} us")
+    print(f"  Physics frontend V7    : {front_us:9.1f} us")
     print(f"  Cyclic features        : {cyclic_us:9.1f} us")
     print(f"  Wrapper/scoring        : {overhead_us:9.1f} us")
     print(f"  Full classifier        : {full_us:9.1f} us")
 
-    # Profile the known suspicious local-frequency routine separately. It performs
-    # a least-squares solve at every position in a pulse.
-    local_elapsed, local_calls = timed(
-        lambda x: frontend._local_frequency(np.unwrap(np.angle(np.asarray(x, dtype=np.complex128)))),
-        snippets,
-        repeats,
-    )
-    local_us = 1e6 * local_elapsed / local_calls
-
-    fit1_elapsed, fit1_calls = timed(
-        lambda x: frontend._phase_fit_rms(np.unwrap(np.angle(np.asarray(x, dtype=np.complex128))), 1),
-        snippets,
-        repeats,
-    )
-    fit2_elapsed, fit2_calls = timed(
-        lambda x: frontend._phase_fit_rms(np.unwrap(np.angle(np.asarray(x, dtype=np.complex128))), 2),
-        snippets,
-        repeats,
-    )
-    fit3_elapsed, fit3_calls = timed(
-        lambda x: frontend._phase_fit_rms(np.unwrap(np.angle(np.asarray(x, dtype=np.complex128))), 3),
-        snippets,
-        repeats,
-    )
+    phase_fn = lambda x: np.unwrap(np.angle(np.asarray(x, dtype=np.complex128)))
+    local_elapsed, local_calls = timed(lambda x: frontend._local_frequency(phase_fn(x)), snippets, repeats)
+    fit1_elapsed, fit1_calls = timed(lambda x: frontend._phase_fit_rms(phase_fn(x), 1), snippets, repeats)
+    fit2_elapsed, fit2_calls = timed(lambda x: frontend._phase_fit_rms(phase_fn(x), 2), snippets, repeats)
+    fit3_elapsed, fit3_calls = timed(lambda x: frontend._phase_fit_rms(phase_fn(x), 3), snippets, repeats)
     jump_elapsed, jump_calls = timed(frontend._wrapped_phase_jump_score, snippets, repeats)
 
-    print("\nPhysics-front-end hotspots")
+    print("\nV7 physics-front-end hotspots")
     print("operation                        us/call")
     print("------------------------------  ---------")
-    print(f"local frequency sliding LSQ     {local_us:9.1f}")
+    print(f"vectorized local frequency      {1e6*local_elapsed/local_calls:9.1f}")
     print(f"linear phase polyfit             {1e6*fit1_elapsed/fit1_calls:9.1f}")
     print(f"quadratic phase polyfit          {1e6*fit2_elapsed/fit2_calls:9.1f}")
     print(f"cubic phase polyfit              {1e6*fit3_elapsed/fit3_calls:9.1f}")
     print(f"wrapped phase-jump score         {1e6*jump_elapsed/jump_calls:9.1f}")
 
+    measured = {
+        "cyclic features": cyclic_us,
+        "linear phase polyfit": 1e6 * fit1_elapsed / fit1_calls,
+        "quadratic phase polyfit": 1e6 * fit2_elapsed / fit2_calls,
+        "cubic phase polyfit": 1e6 * fit3_elapsed / fit3_calls,
+        "wrapped phase-jump score": 1e6 * jump_elapsed / jump_calls,
+        "vectorized local frequency": 1e6 * local_elapsed / local_calls,
+    }
+    largest = max(measured, key=measured.get)
     print("\nLikely interpretation")
-    if local_us > 0.5 * front_us:
-        print("  The sliding local-frequency least-squares loop is the dominant physics cost.")
-        print("  It is an excellent optimization target: estimate local frequency with vectorized")
-        print("  phase differences / convolution rather than np.linalg.lstsq at every sample.")
-    elif cyclic_us > front_us:
-        print("  The three cyclic FFT feature sets dominate; optimize or conditionally invoke them.")
+    print(f"  Largest individually measured remaining component: {largest} ({measured[largest]:.1f} us/pulse).")
+    if largest == "cyclic features":
+        print("  The three cyclic FFT feature sets are now the clearest single optimization target.")
+        print("  Consider conditional invocation or shared/precomputed transforms before lower-level rewrites.")
+    elif "polyfit" in largest:
+        print("  Phase polynomial fitting is now a leading target; fixed-degree closed-form/vectorized fits may help.")
+    elif largest == "wrapped phase-jump score":
+        print("  Robust phase-jump processing is now a leading target; inspect median/quantile/sort costs.")
     else:
-        print("  Cost is distributed; use the measured table before choosing an optimization.")
+        print("  The V7 local-frequency estimator still leads; inspect allocation and correlation overhead.")
     print("  This profiler changes no production classifier behaviour.")
 
 
