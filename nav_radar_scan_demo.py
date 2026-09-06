@@ -5,7 +5,6 @@ seconds of antenna motion cheaply. It represents the observations that the PDW /
 physical-emitter layer will eventually feed to the same behaviour tracker.
 """
 
-import math
 import random
 
 from beam_model import RotatingSincBeam
@@ -39,6 +38,9 @@ def run_demo(duration_s=10.0, update_s=0.01, dwell_after_s=None):
         illumination_threshold_db=-18.0,
         persistent_s=0.75,
         peak_separation_s=0.5,
+        baseline_confidence_threshold=0.50,
+        change_confidence_threshold=0.50,
+        change_hold_s=3.0,
     )
 
     print("S2B ESM NAVIGATION RADAR ILLUMINATION DEMO")
@@ -48,11 +50,13 @@ def run_demo(duration_s=10.0, update_s=0.01, dwell_after_s=None):
     print(f"Beamwidth      : {BEAMWIDTH_DEG:.1f} deg")
     print(f"Truth scan rate: {SCAN_RATE_RPM:.1f} RPM")
     print(f"Truth period   : {60.0/SCAN_RATE_RPM:.3f} s")
+    print("Assessment rule: startup is UNASSESSED; periodic evidence >50% establishes MONITOR")
     if dwell_after_s is not None:
         print(f"Truth change   : stop scan and dwell on ESM at t={dwell_after_s:.1f} s")
     print()
 
-    last_state = None
+    last_observable_state = None
+    last_system_assessment = None
     next_report_s = 0.0
     t = 0.0
     while t <= duration_s + 1e-9:
@@ -62,24 +66,31 @@ def run_demo(duration_s=10.0, update_s=0.01, dwell_after_s=None):
         level_dbfs = simulated_level_dbfs(beam, t)
         assessment = tracker.update(t, level_dbfs)
 
-        state_changed = assessment.state != last_state
+        changed = (
+            assessment.state != last_observable_state
+            or assessment.system_assessment != last_system_assessment
+        )
         periodic_report = t >= next_report_s
-        if state_changed or periodic_report:
+        if changed or periodic_report:
             period_text = "--" if assessment.scan_period_s is None else f"{assessment.scan_period_s:5.3f}s"
             rpm_text = "--" if assessment.scan_rate_rpm is None else f"{assessment.scan_rate_rpm:5.1f}"
+            baseline_text = assessment.baseline_state or "--"
             print(
                 f"t={t:5.2f}s  level={level_dbfs:6.1f} dBFS  "
-                f"{assessment.state:24s}  period={period_text:>7s}  "
-                f"rpm={rpm_text:>5s}  conf={100*assessment.confidence:5.1f}%  "
-                f"continuous={assessment.continuous_illumination_s:4.2f}s"
+                f"obs={assessment.state:23s}  "
+                f"ASSESS={assessment.system_assessment:10s}  "
+                f"period={period_text:>7s}  rpm={rpm_text:>5s}  "
+                f"evidence={100*assessment.confidence:5.1f}%  baseline={baseline_text}"
             )
             next_report_s = t + 0.5
-            last_state = assessment.state
+            last_observable_state = assessment.state
+            last_system_assessment = assessment.system_assessment
 
         t += update_s
 
 
 if __name__ == "__main__":
-    # First demonstrate normal 30 RPM scanning. Then run again with dwell_after_s
-    # set (for example 6.0) to exercise scan -> persistent illumination.
+    # Normal startup should learn PERIODIC_SCAN as the baseline without ever
+    # reporting CHANGED. Use run_demo(duration_s=12.0, dwell_after_s=6.0) next
+    # to exercise a genuine PERIODIC_SCAN -> PERSISTENT_ILLUMINATION change.
     run_demo(duration_s=10.0)
