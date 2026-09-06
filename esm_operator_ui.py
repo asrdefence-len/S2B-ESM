@@ -19,6 +19,7 @@ from PyQt5.QtWidgets import (
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+from matplotlib.lines import Line2D
 
 from config import *
 from simulated_source import SimulatedSource
@@ -31,6 +32,14 @@ from scenarios import get_scenario, list_scenarios
 
 
 REFRESH_MS = 750
+
+ASSESSMENT_COLORS = {
+    "UNASSESSED": "#777777",
+    "MONITOR": "#2f7fbf",
+    "CHANGED": "#d28b00",
+    "OF INTEREST": "#e56b00",
+    "THREAT": "#b22222",
+}
 
 
 class PolarEmitterCanvas(FigureCanvas):
@@ -50,8 +59,48 @@ class PolarEmitterCanvas(FigureCanvas):
         ax.set_yticks((0.25, 0.50, 0.75, 1.0))
         ax.set_yticklabels(())
         ax.set_thetagrids(range(0, 360, 45))
-        ax.grid(True, alpha=0.45)
+        ax.grid(True, alpha=0.28)
         ax.set_title("EMITTER BEARING PICTURE", pad=18, fontsize=12, fontweight="bold")
+
+        # Faint cardinal/inter-cardinal bearing reference spokes.
+        for bearing_deg in range(0, 360, 45):
+            angle = math.radians(bearing_deg)
+            ax.plot(
+                [angle, angle],
+                [0.0, 1.0],
+                color="black",
+                linewidth=0.7,
+                alpha=0.16,
+                zorder=0,
+            )
+
+        legend_items = [
+            Line2D([0], [0], marker="o", linestyle="None",
+                   markerfacecolor=ASSESSMENT_COLORS["UNASSESSED"], markeredgecolor="black",
+                   markersize=8, label="UNASSESSED"),
+            Line2D([0], [0], marker="o", linestyle="None",
+                   markerfacecolor=ASSESSMENT_COLORS["MONITOR"], markeredgecolor="black",
+                   markersize=8, label="MONITOR"),
+            Line2D([0], [0], marker="o", linestyle="None",
+                   markerfacecolor=ASSESSMENT_COLORS["CHANGED"], markeredgecolor="black",
+                   markersize=8, label="CHANGED"),
+            Line2D([0], [0], marker="o", linestyle="None",
+                   markerfacecolor=ASSESSMENT_COLORS["OF INTEREST"], markeredgecolor="black",
+                   markersize=8, label="OF INTEREST"),
+            Line2D([0], [0], marker="o", linestyle="None",
+                   markerfacecolor=ASSESSMENT_COLORS["THREAT"], markeredgecolor="black",
+                   markersize=8, label="THREAT"),
+        ]
+        ax.legend(
+            handles=legend_items,
+            title="ASSESSMENT",
+            loc="upper right",
+            bbox_to_anchor=(-0.18, 1.08),
+            framealpha=0.92,
+            fontsize=8,
+            title_fontsize=8,
+            borderaxespad=0.0,
+        )
 
     def update_emitters(self, emitters, selected_index=0):
         self._configure_axes()
@@ -80,12 +129,37 @@ class PolarEmitterCanvas(FigureCanvas):
             count = bearing_counts[key]
             radius = 0.78 if count == 1 else 0.60 + 0.18 * occurrence
 
+            # Explicit line of bearing. The selected emitter is emphasized slightly.
+            ax.plot(
+                [angle, angle],
+                [0.0, radius],
+                color="black",
+                linewidth=1.5 if index == selected_index else 1.0,
+                alpha=0.75 if index == selected_index else 0.55,
+                zorder=1,
+            )
+
             marker = "o" if index != selected_index else "D"
             size = 90 if index != selected_index else 125
             color = emitter["display_color"]
-            ax.scatter([angle], [radius], s=size, marker=marker, c=[color], edgecolors="black", linewidths=0.8)
-            ax.text(angle, min(radius + 0.09, 0.98), emitter["emitter_id"],
-                    ha="center", va="center", fontsize=10, fontweight="bold")
+            ax.scatter(
+                [angle], [radius], s=size, marker=marker, c=[color],
+                edgecolors="black", linewidths=0.8, zorder=3,
+            )
+
+            # WATCH is an operator attention state, separate from system assessment.
+            # Use a gold outline rather than changing the assessment colour.
+            if emitter.get("watched", False):
+                ax.scatter(
+                    [angle], [radius], s=size + 115, marker="o",
+                    facecolors="none", edgecolors="#d4a017", linewidths=2.3, zorder=2,
+                )
+
+            label = emitter["emitter_id"] + (" *" if emitter.get("watched", False) else "")
+            ax.text(
+                angle, min(radius + 0.09, 0.98), label,
+                ha="center", va="center", fontsize=10, fontweight="bold", zorder=4,
+            )
 
         self.draw_idle()
 
@@ -100,6 +174,7 @@ class S2BOperatorWindow(QMainWindow):
         self.emitters = []
         self.selected_emitter_index = 0
         self.extractor = None
+        self.watched_emitters = set()
 
         self.timer = QTimer(self)
         self.timer.setInterval(REFRESH_MS)
@@ -156,9 +231,9 @@ class S2BOperatorWindow(QMainWindow):
         self.polar = PolarEmitterCanvas(left)
         left_layout.addWidget(self.polar, stretch=1)
 
-        self.emitter_table = QTableWidget(0, 6)
+        self.emitter_table = QTableWidget(0, 7)
         self.emitter_table.setHorizontalHeaderLabels(
-            ["Emitter", "AOA", "RF MHz", "Waveform", "State", "Track conf."]
+            ["Emitter", "AOA", "RF MHz", "Waveform", "State", "Watch", "Track conf."]
         )
         self.emitter_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.emitter_table.setSelectionMode(QTableWidget.SingleSelection)
@@ -179,6 +254,11 @@ class S2BOperatorWindow(QMainWindow):
         self.assessment_label.setMinimumHeight(38)
         right_layout.addWidget(self.assessment_label)
 
+        self.watch_button = QPushButton("WATCH SELECTED EMITTER")
+        self.watch_button.clicked.connect(self._toggle_watch)
+        self.watch_button.setEnabled(False)
+        right_layout.addWidget(self.watch_button)
+
         self.details = QTextEdit()
         self.details.setReadOnly(True)
         self.details.setStyleSheet("font-family: Menlo, Consolas, monospace; font-size: 12px;")
@@ -197,7 +277,8 @@ class S2BOperatorWindow(QMainWindow):
         splitter.setSizes([880, 570])
 
         footer = QLabel(
-            "Bearing-only picture: radial position is for visual separation only and does NOT represent range."
+            "Colour = system assessment. Gold ring/* = operator WATCH. "
+            "Radial position is visual separation only and does NOT represent range."
         )
         footer.setStyleSheet("color: #666;")
         root.addWidget(footer)
@@ -232,6 +313,7 @@ class S2BOperatorWindow(QMainWindow):
     def _scenario_changed(self, _name):
         self.selected_emitter_index = 0
         self.extractor = None
+        self.watched_emitters.clear()
         self._refresh()
 
     def _make_mht(self):
@@ -269,8 +351,6 @@ class S2BOperatorWindow(QMainWindow):
                 center_frequency_hz=metadata["center_frequency_hz"],
             )
         else:
-            # Each UI snapshot is currently a replay of a finite simulation window,
-            # so restart PDW numbering for a clean operator picture.
             self.extractor.next_pdw_id = 1
 
         pulses = detector.detect(iq)
@@ -296,22 +376,24 @@ class S2BOperatorWindow(QMainWindow):
             changed = len(tracks) > 1
             mean_aoa = sum(t.get("aoa_deg", 0.0) for t in tracks) / len(tracks)
             track_conf = sum(t["track_confidence"] for t in tracks) / len(tracks)
+            pulse_count = sum(t["pulse_count"] for t in tracks)
 
-            if changed:
-                state = "CHANGED"
-                color = "#d28b00"
-            elif track_conf < 0.75:
+            # System assessment is deliberately separate from operator WATCH.
+            # OF INTEREST and THREAT are reserved for later behaviour/threat logic.
+            if pulse_count < 3 or track_conf < 0.75:
                 state = "UNASSESSED"
-                color = "#777777"
+            elif changed:
+                state = "CHANGED"
             else:
                 state = "MONITOR"
-                color = "#2f7fbf"
 
+            emitter_id = f"E{emitter_index}"
             emitters.append({
-                "emitter_id": f"E{emitter_index}",
+                "emitter_id": emitter_id,
                 "aoa_deg": mean_aoa,
                 "state": state,
-                "display_color": color,
+                "display_color": ASSESSMENT_COLORS[state],
+                "watched": emitter_id in self.watched_emitters,
                 "tracks": tracks,
                 "current": current,
                 "links": group["links"],
@@ -349,6 +431,7 @@ class S2BOperatorWindow(QMainWindow):
                 f"{current['frequency_hz'] / 1e6:.3f}",
                 current["modulation"],
                 emitter["state"],
+                "WATCH" if emitter.get("watched", False) else "",
                 f"{100.0 * emitter['track_confidence']:.1f}%",
             )
             for column, value in enumerate(values):
@@ -363,23 +446,42 @@ class S2BOperatorWindow(QMainWindow):
         self.polar.update_emitters(self.emitters, self.selected_emitter_index)
         self._show_selected_emitter()
 
+    def _toggle_watch(self):
+        if not self.emitters:
+            return
+        emitter_id = self.emitters[self.selected_emitter_index]["emitter_id"]
+        if emitter_id in self.watched_emitters:
+            self.watched_emitters.remove(emitter_id)
+        else:
+            self.watched_emitters.add(emitter_id)
+        for emitter in self.emitters:
+            emitter["watched"] = emitter["emitter_id"] in self.watched_emitters
+        self._populate_table()
+        self.polar.update_emitters(self.emitters, self.selected_emitter_index)
+        self._show_selected_emitter()
+
     def _show_selected_emitter(self):
         if not self.emitters:
             self.emitter_heading.setText("NO EMITTER SELECTED")
             self.assessment_label.setText("UNASSESSED")
             self.assessment_label.setStyleSheet("background:#777;color:white;font-weight:700;padding:7px;")
+            self.watch_button.setEnabled(False)
             self.details.setPlainText("No physical emitters currently assessed.")
             return
 
         emitter = self.emitters[self.selected_emitter_index]
         current = emitter["current"]
+        watched = emitter.get("watched", False)
+        watch_text = "  * WATCH" if watched else ""
         self.emitter_heading.setText(
-            f"{emitter['emitter_id']}  |  BEARING {emitter['aoa_deg']:.1f} deg"
+            f"{emitter['emitter_id']}  |  BEARING {emitter['aoa_deg']:.1f} deg{watch_text}"
         )
         self.assessment_label.setText(emitter["state"])
         self.assessment_label.setStyleSheet(
             f"background:{emitter['display_color']};color:white;font-weight:700;padding:7px;"
         )
+        self.watch_button.setEnabled(True)
+        self.watch_button.setText("REMOVE WATCH" if watched else "WATCH SELECTED EMITTER")
 
         pri = "UNRESOLVED" if current["pri_s"] is None else f"{current['pri_s'] * 1e6:.1f} us"
         track_ids = ", ".join(f"T{track['track_id']}" for track in emitter["tracks"])
@@ -388,6 +490,8 @@ class S2BOperatorWindow(QMainWindow):
             "----------------------",
             f"Physical emitter : {emitter['emitter_id']}",
             f"Bearing          : {emitter['aoa_deg']:.1f} deg",
+            f"Operator watch   : {'YES' if watched else 'NO'}",
+            f"System assessment: {emitter['state']}",
             f"Sequence tracks  : {track_ids}",
             f"RF               : {current['frequency_hz'] / 1e6:.3f} MHz",
             f"PRI median       : {pri}",
@@ -418,7 +522,8 @@ class S2BOperatorWindow(QMainWindow):
             "S2B INTERPRETATION",
             "------------------",
             "Behaviour hypotheses are not enabled yet.",
-            "This panel will later show competing explanations, evidence and missing evidence.",
+            "OF INTEREST and THREAT are therefore not assigned automatically yet.",
+            "WATCH is an operator attention flag and does not change system assessment.",
         ])
         self.details.setPlainText("\n".join(lines))
 
