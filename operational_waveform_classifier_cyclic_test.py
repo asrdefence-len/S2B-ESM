@@ -33,6 +33,8 @@ def main():
     seed = 920000
     results = defaultdict(lambda: [0, 0, 0])
     unknown_by_snr = defaultdict(lambda: [0, 0])
+    labels = ("CW", "FM", "PHASE_CODED", "UNKNOWN")
+    confusion = {truth: {pred: 0 for pred in labels} for truth in labels}
 
     for name, truth in cases:
         for width in widths_us:
@@ -55,13 +57,14 @@ def main():
                     results[name][0] += int(rb.family == truth)
                     results[name][1] += int(rc.family == truth)
                     results[name][2] += 1
+                    confusion[truth][rc.family] += 1
                     if name == "DUAL_TONE":
                         unknown_by_snr[snr][0] += int(rc.family == "UNKNOWN")
                         unknown_by_snr[snr][1] += 1
 
     print("S2B CYCLIC-EVIDENCE CLASSIFIER COMPARISON")
     print("=========================================")
-    print("The base classifier is unchanged. The experimental classifier adds only")
+    print("The base classifier is unchanged. The operational classifier adds only")
     print("lightweight x^2/x^4/envelope cyclic evidence.")
     print()
     print("waveform                base      cyclic      change")
@@ -93,6 +96,14 @@ def main():
     print()
     print(f"Known-family base accuracy   : {100.0*known_b/known_n:.2f}%")
     print(f"Known-family cyclic accuracy : {100.0*known_c/known_n:.2f}%")
+
+    print()
+    print("Cyclic classifier confusion matrix")
+    print("----------------------------------")
+    print(f"{'truth\\pred':14s}" + "".join(f"{label:>14s}" for label in labels))
+    for truth in labels:
+        print(f"{truth:14s}" + "".join(f"{confusion[truth][pred]:14d}" for pred in labels))
+
     print()
     print("Decision criterion: useful if dual-tone UNKNOWN rejection improves strongly")
     print("without materially degrading CW/FM/PHASE_CODED accuracy.")
