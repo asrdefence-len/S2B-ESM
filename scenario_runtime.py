@@ -1,7 +1,7 @@
 """Runtime for scripted S2B emitter behaviour scenarios.
 
 This module deliberately separates simulator truth (emitter type and mode names)
-from the observations that will later be presented to the ESM.  The ESM should
+from the observations that will later be presented to the ESM. The ESM should
 receive generated RF/antenna consequences, never the active mode label itself.
 """
 
@@ -23,6 +23,7 @@ class EmitterRuntimeState:
     emitter_type: str
     aoa_deg: float
     peak_level_dbfs: float
+    initial_antenna_azimuth_deg: float
     active_mode: str
     mode: dict[str, Any]
     event_time_s: float
@@ -115,6 +116,9 @@ class ScenarioRuntime:
             emitter_type=emitter_type,
             aoa_deg=float(emitter.get("aoa_deg", 0.0)),
             peak_level_dbfs=float(emitter.get("peak_level_dbfs", -6.0)),
+            initial_antenna_azimuth_deg=float(
+                emitter.get("initial_antenna_azimuth_deg", 0.0)
+            ),
             active_mode=mode_name,
             mode=mode,
             event_time_s=float(event["time_s"]),
