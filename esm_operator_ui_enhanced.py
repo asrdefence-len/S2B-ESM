@@ -27,9 +27,12 @@ class EnhancedPolarEmitterCanvas(PolarEmitterCanvas):
 class EnhancedS2BOperatorWindow(S2BOperatorWindow):
     def __init__(self):
         self.emitter_library=EmitterLibrary()
-        # A short strip is deliberately a recent-context display, not a long log.
         self.mode_history=ObservedModeHistory(max_entries=10)
+        # Per-emitter identity memory. Confidence recovers gradually after an
+        # anomalous mode rather than snapping immediately back to 90%.
         self.library_memory={}
+        self.library_confidence_memory={}
+        self.library_last_time={}
         self._details_emitter_id=None
         super().__init__()
         self.setWindowTitle("S2B ESM - Operator Display"); self.resize(1750,1050); self.setMinimumSize(1250,760); self.details.setMinimumHeight(380)
@@ -42,17 +45,48 @@ class EnhancedS2BOperatorWindow(S2BOperatorWindow):
         table_index=layout.indexOf(self.emitter_table); layout.insertWidget(table_index,self.mode_history_title); layout.insertWidget(table_index+1,self.mode_history_table)
 
     def reset_system(self):
-        self.mode_history.clear(); self.library_memory.clear(); self._details_emitter_id=None; super().reset_system()
+        self.mode_history.clear(); self.library_memory.clear(); self.library_confidence_memory.clear(); self.library_last_time.clear(); self._details_emitter_id=None; super().reset_system()
 
     def _scenario_changed(self,name):
-        self.mode_history.clear(); self.library_memory.clear(); self._details_emitter_id=None; super()._scenario_changed(name)
+        self.mode_history.clear(); self.library_memory.clear(); self.library_confidence_memory.clear(); self.library_last_time.clear(); self._details_emitter_id=None; super()._scenario_changed(name)
 
     def _assign_library(self,e):
         c=e["current"]; illumination=e.get("illumination"); illumination_state=illumination.state if illumination is not None else None; eid=e["emitter_id"]
-        previous=self.library_memory.get(eid)
-        match=self.emitter_library.identify(c.get("frequency_hz"),c.get("pri_s"),c.get("modulation"),illumination_state,previous_type=previous)
-        e["library_id"]=match.emitter_type; e["library_confidence"]=match.confidence; e["library_reason"]=match.reason
-        if match.emitter_type != "UNKNOWN": self.library_memory[eid]=match.emitter_type
+        previous_type=self.library_memory.get(eid)
+        match=self.emitter_library.identify(c.get("frequency_hz"),c.get("pri_s"),c.get("modulation"),illumination_state,previous_type=previous_type)
+
+        # Use scenario time for the physical E3 chain; snapshots fall back to their
+        # own end time. This keeps confidence changes time-based, not refresh-rate based.
+        now=float(c.get("end_toa_s",0.0) or 0.0)
+        previous_conf=self.library_confidence_memory.get(eid)
+        previous_time=self.library_last_time.get(eid,now)
+        dt=max(0.0,now-previous_time)
+
+        lib_id=match.emitter_type
+        conf=match.confidence
+        reason=match.reason
+
+        if lib_id == "NAVRADAR":
+            if previous_type in ("NAVRADAR?","UNKNOWN") and previous_conf is not None:
+                # Full signature has returned, but identity confidence must rebuild.
+                # Recover at 5 percentage points per second to a 90% ceiling.
+                conf=min(0.90, max(previous_conf,0.50) + 0.05*dt)
+                lib_id="NAVRADAR" if conf >= 0.80 else "NAVRADAR?"
+                reason="Full NAVRADAR signature has returned; confidence is rebuilding after the recent mode deviation"
+            else:
+                conf=0.90
+        elif lib_id == "NAVRADAR?":
+            # An unexpected mode should immediately reduce confidence, but not erase
+            # the physical-emitter identity hypothesis.
+            if previous_conf is not None:
+                conf=min(conf, max(0.50, previous_conf-0.20))
+        else:
+            conf=0.0
+
+        e["library_id"]=lib_id; e["library_confidence"]=conf; e["library_reason"]=reason
+        self.library_memory[eid]=lib_id
+        self.library_confidence_memory[eid]=conf
+        self.library_last_time[eid]=now
         return e
 
     def _refresh(self):
@@ -93,7 +127,6 @@ class EnhancedS2BOperatorWindow(S2BOperatorWindow):
         e=self.emitters[self.selected_emitter_index]; eid=e["emitter_id"]; scrollbar=self.details.verticalScrollBar(); same=eid==self._details_emitter_id; previous_scroll=scrollbar.value() if same else 0
         super()._show_selected_emitter()
         lib=e.get("library_id","UNKNOWN"); conf=100.*e.get("library_confidence",0.); reason=e.get("library_reason","No library evidence"); existing=self.details.toPlainText()
-        # Remove engineering/internal lines from the operator-facing pane.
         remove_prefixes=("Operator assess.","Displayed state","Sequence tracks","ESM threshold","ESM noise floor")
         existing="\n".join(line for line in existing.splitlines() if not line.strip().startswith(remove_prefixes))
         prefix=("EMITTER LIBRARY\n---------------\n"f"ID / confidence  : {lib} / {conf:.0f}%\n"f"Evidence         : {reason}\n\n")
