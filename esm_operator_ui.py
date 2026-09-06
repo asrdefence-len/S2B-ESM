@@ -58,7 +58,7 @@ class PolarEmitterCanvas(FigureCanvas):
 class S2BOperatorWindow(QMainWindow):
     def __init__(self):
         super().__init__(); self.setWindowTitle("S2B ESM - Operator Display"); self.resize(1450,880)
-        self.running=False; self.emitters=[]; self.selected_emitter_index=0; self.extractor=None; self.watched_emitters=set()
+        self.running=False; self.emitters=[]; self.selected_emitter_index=0; self.extractor=None; self.watched_emitters=set(); self.operator_assessments={}
         root=Path(__file__).resolve().parent
         self.nav_runtime=ScenarioRuntime(root/"emitter_types.yaml",root/"scripted_scenarios"/"nav_scan_to_dwell.yaml")
         self.nav_motion=ScriptedAntennaMotion(self.nav_runtime,"E3")
@@ -76,13 +76,18 @@ class S2BOperatorWindow(QMainWindow):
             b=QPushButton(text); b.clicked.connect(fn); top.addWidget(b)
         root.addLayout(top); splitter=QSplitter(Qt.Horizontal); root.addWidget(splitter,stretch=1)
         left=QWidget(); ll=QVBoxLayout(left); self.polar=PolarEmitterCanvas(left); ll.addWidget(self.polar,stretch=1)
-        self.emitter_table=QTableWidget(0,7); self.emitter_table.setHorizontalHeaderLabels(["Emitter","AOA","RF MHz","Waveform","State","Watch","Track conf."]); self.emitter_table.setSelectionBehavior(QTableWidget.SelectRows); self.emitter_table.setSelectionMode(QTableWidget.SingleSelection); self.emitter_table.cellClicked.connect(self._emitter_selected); self.emitter_table.horizontalHeader().setStretchLastSection(True); self.emitter_table.setMaximumHeight(230); ll.addWidget(self.emitter_table); splitter.addWidget(left)
+        self.emitter_table=QTableWidget(0,7); self.emitter_table.setHorizontalHeaderLabels(["Emitter","AOA","RF MHz","Waveform","State","Watch","Track conf."]); self.emitter_table.setSelectionBehavior(QTableWidget.SelectRows); self.emitter_table.setSelectionMode(QTableWidget.SingleSelection); self.emitter_table.cellClicked.connect(self._emitter_selected); self.emitter_table.horizontalHeader().setStretchLastSection(True); self.emitter_table.setMaximumHeight(230); ll.addWidget(self.emitter_table)
+        assess_row=QHBoxLayout(); assess_label=QLabel("OPERATOR ASSESSMENT:"); assess_label.setStyleSheet("font-weight:700;"); assess_row.addWidget(assess_label)
+        self.operator_assessment_buttons=[]
+        for text,state in (("MONITOR","MONITOR"),("OF INTEREST","OF INTEREST"),("THREAT","THREAT"),("AUTO","AUTO")):
+            b=QPushButton(text); b.clicked.connect(lambda _checked=False,s=state:self._set_operator_assessment(s)); assess_row.addWidget(b); self.operator_assessment_buttons.append(b)
+        assess_row.addStretch(1); ll.addLayout(assess_row); splitter.addWidget(left)
         right=QWidget(); rl=QVBoxLayout(right); self.emitter_heading=QLabel("NO EMITTER SELECTED"); self.emitter_heading.setStyleSheet("font-size: 17px; font-weight: 700;"); rl.addWidget(self.emitter_heading)
         self.assessment_label=QLabel("UNASSESSED"); self.assessment_label.setAlignment(Qt.AlignCenter); self.assessment_label.setMinimumHeight(38); rl.addWidget(self.assessment_label)
         self.watch_button=QPushButton("WATCH SELECTED EMITTER"); self.watch_button.clicked.connect(self._toggle_watch); self.watch_button.setEnabled(False); rl.addWidget(self.watch_button)
         self.details=QTextEdit(); self.details.setReadOnly(True); self.details.setStyleSheet("font-family: Menlo, Consolas, monospace; font-size: 12px;"); rl.addWidget(self.details,stretch=3)
         nt=QLabel("OPERATOR / S2B NOTES"); nt.setStyleSheet("font-weight: 700;"); rl.addWidget(nt); self.notes=QTextEdit(); self.notes.setPlaceholderText("Operator notes. Later this panel will also show behavioural hypotheses, missing evidence and suggested probes."); rl.addWidget(self.notes,stretch=1); splitter.addWidget(right); splitter.setSizes([880,570])
-        footer=QLabel("START resumes. STOP pauses. RESET clears emitter behaviour history and restarts the scenario. Colour = system assessment; gold ring/* = operator WATCH. Radial position is not range."); footer.setStyleSheet("color: #666;"); root.addWidget(footer)
+        footer=QLabel("START resumes. STOP pauses. RESET clears scenario history and operator assessments. Colour = displayed assessment; operator assessment overrides system assessment until AUTO is selected. Gold ring/* = WATCH."); footer.setStyleSheet("color: #666;"); root.addWidget(footer)
     def _set_status(self,state):
         self.status_label.setText(state); bg="#1f7a3a" if state=="RUNNING" else "#9b1c1c" if state=="ERROR" else "#555"; self.status_label.setStyleSheet(f"background:{bg};color:white;font-weight:700;padding:6px;")
     def _reset_nav_radar(self):
@@ -95,12 +100,12 @@ class S2BOperatorWindow(QMainWindow):
         if self.nav_resume_monotonic is not None:self.nav_elapsed_s+=time.monotonic()-self.nav_resume_monotonic
         self.nav_resume_monotonic=None; self.running=False; self.timer.stop(); self._set_status("STOPPED")
     def reset_system(self):
-        was=self.running; self.extractor=None; self.selected_emitter_index=0; self.watched_emitters.clear(); self._reset_nav_radar()
+        was=self.running; self.extractor=None; self.selected_emitter_index=0; self.watched_emitters.clear(); self.operator_assessments.clear(); self._reset_nav_radar()
         if was:self.nav_resume_monotonic=time.monotonic(); self.timer.start(); self._set_status("RUNNING")
         else:self._set_status("STOPPED")
         self._refresh()
     def closeEvent(self,event): self.timer.stop(); self.running=False; event.accept()
-    def _scenario_changed(self,_name): self.selected_emitter_index=0; self.extractor=None; self.watched_emitters.clear(); self._reset_nav_radar(); self._refresh()
+    def _scenario_changed(self,_name): self.selected_emitter_index=0; self.extractor=None; self.watched_emitters.clear(); self.operator_assessments.clear(); self._reset_nav_radar(); self._refresh()
     def _make_mht(self):
         return GatedFastProbabilisticMultipleHypothesisAssociator(frequency_sigma_hz=ASSOCIATION_FREQUENCY_TOLERANCE_HZ,pulse_width_sigma_s=ASSOCIATION_PULSE_WIDTH_TOLERANCE_S,amplitude_sigma_db=ASSOCIATION_AMPLITUDE_TOLERANCE_DB,timing_sigma_s=ASSOCIATION_TIMING_TOLERANCE_S,beam_width=MHT_BEAM_WIDTH,max_emitters=MHT_MAX_EMITTERS,birth_probability=PMHT_BIRTH_PROBABILITY,clutter_probability=PMHT_CLUTTER_PROBABILITY,modulation_match_probability=PMHT_MODULATION_MATCH_PROBABILITY,missed_pulse_probability=PMHT_MISSED_PULSE_PROBABILITY,max_pri_multiple=PMHT_MAX_PRI_MULTIPLE)
     def _process_snapshot(self):
@@ -111,8 +116,8 @@ class S2BOperatorWindow(QMainWindow):
         if not hypotheses:return scenario,[],len(pulses)
         marg=mht.association_marginals(hypotheses); mem=mht.reference_track_membership(hypotheses); summaries=OperatorEmitterSummary().build(hypotheses,marg,mem); ph=PhysicalEmitterCorrelator(frequency_scale_hz=ASSOCIATION_FREQUENCY_TOLERANCE_HZ,amplitude_scale_db=ASSOCIATION_AMPLITUDE_TOLERANCE_DB).correlate(hypotheses[0],[]); groups=_physical_groups(summaries,ph); emitters=[]
         for ei,g in enumerate(groups,start=1):
-            tracks=g["tracks"]; current=max(tracks,key=lambda x:x["end_toa_s"]); changed=len(tracks)>1; aoa=sum(t.get("aoa_deg",0.) for t in tracks)/len(tracks); conf=sum(t["track_confidence"] for t in tracks)/len(tracks); pc=sum(t["pulse_count"] for t in tracks); state="UNASSESSED" if pc<3 or conf<.75 else "CHANGED" if changed else "MONITOR"; eid=f"E{ei}"
-            emitters.append({"emitter_id":eid,"aoa_deg":aoa,"state":state,"display_color":ASSESSMENT_COLORS[state],"watched":eid in self.watched_emitters,"tracks":tracks,"current":current,"links":g["links"],"track_confidence":conf,"illumination":None})
+            tracks=g["tracks"]; current=max(tracks,key=lambda x:x["end_toa_s"]); changed=len(tracks)>1; aoa=sum(t.get("aoa_deg",0.) for t in tracks)/len(tracks); conf=sum(t["track_confidence"] for t in tracks)/len(tracks); pc=sum(t["pulse_count"] for t in tracks); system_state="UNASSESSED" if pc<3 or conf<.75 else "CHANGED" if changed else "MONITOR"; eid=f"E{ei}"
+            emitters.append({"emitter_id":eid,"aoa_deg":aoa,"state":system_state,"system_state":system_state,"display_color":ASSESSMENT_COLORS[system_state],"watched":eid in self.watched_emitters,"tracks":tracks,"current":current,"links":g["links"],"track_confidence":conf,"illumination":None})
         return scenario,emitters,len(pulses)
     def _nav_pattern_db(self,state,azimuth_deg):
         antenna=state.mode["antenna"]
@@ -131,12 +136,15 @@ class S2BOperatorWindow(QMainWindow):
             t+=NAV_DT_S
         self.nav_last_sample_s=max(self.nav_last_sample_s,t)
     def _nav_emitter_record(self):
-        t=min(self.nav_runtime.duration_s,max(0.,self.nav_last_sample_s-NAV_DT_S)); truth_state=self.nav_runtime.state("E3",t); a=self.nav_assessment; state=a.system_assessment; eid="E3"; mode=truth_state.mode
+        t=min(self.nav_runtime.duration_s,max(0.,self.nav_last_sample_s-NAV_DT_S)); truth_state=self.nav_runtime.state("E3",t); a=self.nav_assessment; system_state=a.system_assessment; eid="E3"; mode=truth_state.mode
         current={"frequency_hz":float(mode["frequency_hz"]),"modulation":str(mode["waveform"]),"pri_s":float(mode["pri_us"])*1e-6,"pri_pattern":"STABLE","pulse_width_s":float(mode["pw_us"])*1e-6,"amplitude_dbfs":0.,"pulse_count":self.nav_pulse_count,"track_id":3,"end_toa_s":t,"received_power_dbm":self.nav_prx_dbm,"detected":self.nav_detected,"range_km_truth":truth_state.range_km,"antenna_azimuth_deg_truth":self.nav_azimuth_deg}
-        return {"emitter_id":eid,"aoa_deg":truth_state.aoa_deg,"state":state,"display_color":ASSESSMENT_COLORS.get(state,ASSESSMENT_COLORS["UNASSESSED"]),"watched":eid in self.watched_emitters,"tracks":[current],"current":current,"links":[],"track_confidence":max(0.,a.confidence),"illumination":a,"physical_scripted":True}
+        return {"emitter_id":eid,"aoa_deg":truth_state.aoa_deg,"state":system_state,"system_state":system_state,"display_color":ASSESSMENT_COLORS.get(system_state,ASSESSMENT_COLORS["UNASSESSED"]),"watched":eid in self.watched_emitters,"tracks":[current],"current":current,"links":[],"track_confidence":max(0.,a.confidence),"illumination":a,"physical_scripted":True}
+    def _apply_operator_assessment(self,e):
+        eid=e["emitter_id"]; operator_state=self.operator_assessments.get(eid); e["operator_assessment"]=operator_state
+        e["state"]=operator_state or e.get("system_state",e["state"]); e["display_color"]=ASSESSMENT_COLORS.get(e["state"],ASSESSMENT_COLORS["UNASSESSED"]); return e
     def _refresh(self):
         try:
-            scenario,emitters,pulse_count=self._process_snapshot(); self._update_nav_radar(); emitters.append(self._nav_emitter_record()); self.emitters=emitters
+            scenario,emitters,pulse_count=self._process_snapshot(); self._update_nav_radar(); emitters.append(self._nav_emitter_record()); emitters=[self._apply_operator_assessment(e) for e in emitters]; self.emitters=emitters
             if self.selected_emitter_index>=len(emitters):self.selected_emitter_index=max(0,len(emitters)-1)
             self._populate_table(); self.polar.update_emitters(self.emitters,self.selected_emitter_index); self._show_selected_emitter(); self.statusBar().showMessage(f"Scenario: {scenario.name} | IQ pulses: {pulse_count} | Physical emitters: {len(emitters)} | E3 physical script: 9.410 GHz, 15 km")
         except Exception as exc:
@@ -149,6 +157,13 @@ class S2BOperatorWindow(QMainWindow):
             for col,v in enumerate(vals): item=QTableWidgetItem(v); item.setFlags(item.flags() & ~Qt.ItemIsEditable); self.emitter_table.setItem(row,col,item)
         if self.emitters:self.emitter_table.selectRow(self.selected_emitter_index)
     def _emitter_selected(self,row,_column): self.selected_emitter_index=row; self.polar.update_emitters(self.emitters,row); self._show_selected_emitter()
+    def _set_operator_assessment(self,state):
+        if not self.emitters:return
+        eid=self.emitters[self.selected_emitter_index]["emitter_id"]
+        if state=="AUTO": self.operator_assessments.pop(eid,None)
+        else: self.operator_assessments[eid]=state
+        for e in self.emitters:self._apply_operator_assessment(e)
+        self._populate_table(); self.polar.update_emitters(self.emitters,self.selected_emitter_index); self._show_selected_emitter()
     def _toggle_watch(self):
         if not self.emitters:return
         eid=self.emitters[self.selected_emitter_index]["emitter_id"]
@@ -159,9 +174,9 @@ class S2BOperatorWindow(QMainWindow):
     def _show_selected_emitter(self):
         if not self.emitters:
             self.emitter_heading.setText("NO EMITTER SELECTED"); self.assessment_label.setText("UNASSESSED"); self.assessment_label.setStyleSheet("background:#777;color:white;font-weight:700;padding:7px;"); self.watch_button.setEnabled(False); self.details.setPlainText("No physical emitters currently assessed."); return
-        e=self.emitters[self.selected_emitter_index]; c=e["current"]; watched=e.get("watched",False); self.emitter_heading.setText(f"{e['emitter_id']}  |  BEARING {e['aoa_deg']:.1f} deg"+("  * WATCH" if watched else "")); self.assessment_label.setText(e["state"]); self.assessment_label.setStyleSheet(f"background:{e['display_color']};color:white;font-weight:700;padding:7px;"); self.watch_button.setEnabled(True); self.watch_button.setText("REMOVE WATCH" if watched else "WATCH SELECTED EMITTER")
+        e=self.emitters[self.selected_emitter_index]; c=e["current"]; watched=e.get("watched",False); operator_state=e.get("operator_assessment"); system_state=e.get("system_state",e["state"]); self.emitter_heading.setText(f"{e['emitter_id']}  |  BEARING {e['aoa_deg']:.1f} deg"+("  * WATCH" if watched else "")); self.assessment_label.setText(e["state"]); self.assessment_label.setStyleSheet(f"background:{e['display_color']};color:white;font-weight:700;padding:7px;"); self.watch_button.setEnabled(True); self.watch_button.setText("REMOVE WATCH" if watched else "WATCH SELECTED EMITTER")
         pri="UNRESOLVED" if c["pri_s"] is None else f"{c['pri_s']*1e6:.1f} us"; tids=", ".join(f"T{t['track_id']}" for t in e["tracks"])
-        lines=["CURRENT OBSERVED STATE","----------------------",f"Physical emitter : {e['emitter_id']}",f"Bearing          : {e['aoa_deg']:.1f} deg",f"Operator watch   : {'YES' if watched else 'NO'}",f"System assessment: {e['state']}",f"Sequence tracks  : {tids}",f"RF               : {c['frequency_hz']/1e6:.3f} MHz",f"PRI median       : {pri}",f"PRI pattern      : {c['pri_pattern']}",f"Pulse width      : {c['pulse_width_s']*1e6:.3f} us",f"Waveform family  : {c['modulation']}"]
+        lines=["CURRENT OBSERVED STATE","----------------------",f"Physical emitter : {e['emitter_id']}",f"Bearing          : {e['aoa_deg']:.1f} deg",f"Operator watch   : {'YES' if watched else 'NO'}",f"System assessment: {system_state}",f"Operator assess. : {operator_state or 'AUTO'}",f"Displayed state  : {e['state']}",f"Sequence tracks  : {tids}",f"RF               : {c['frequency_hz']/1e6:.3f} MHz",f"PRI median       : {pri}",f"PRI pattern      : {c['pri_pattern']}",f"Pulse width      : {c['pulse_width_s']*1e6:.3f} us",f"Waveform family  : {c['modulation']}"]
         if e.get("physical_scripted"):
             threshold=float(self.nav_runtime.esm_receiver["detection_threshold_dbm"]); noise=float(self.nav_runtime.esm_receiver["noise_floor_dbm"]); lines.extend([f"Received power   : {c['received_power_dbm']:.2f} dBm",f"Detection        : {'YES' if c['detected'] else 'NO'}",f"ESM threshold    : {threshold:.1f} dBm",f"ESM noise floor  : {noise:.1f} dBm",f"Observed pulses  : {c['pulse_count']}"])
         else:
@@ -182,7 +197,7 @@ class S2BOperatorWindow(QMainWindow):
             for t in e["tracks"]:
                 tp="UNRESOLVED" if t["pri_s"] is None else f"{t['pri_s']*1e6:.1f} us"; lines.append(f"T{t['track_id']}: RF={t['frequency_hz']/1e6:.3f} MHz, PRI={tp}, PW={t['pulse_width_s']*1e6:.3f} us, MOD={t['modulation']}")
         else: lines.append("No significant linked-track behaviour change currently detected.")
-        lines.extend(["","S2B INTERPRETATION","------------------","Behaviour hypotheses are not enabled yet.","OF INTEREST and THREAT are therefore not assigned automatically yet.","WATCH is an operator attention flag and does not change system assessment."]); self.details.setPlainText("\n".join(lines))
+        lines.extend(["","S2B INTERPRETATION","------------------","Behaviour hypotheses are not enabled yet.","Operator assessment is independent of the system assessment.","Use MONITOR / OF INTEREST / THREAT to classify the selected emitter; AUTO returns display control to the system.","WATCH is an operator attention flag and does not change assessment."]); self.details.setPlainText("\n".join(lines))
 
 
 def main():
