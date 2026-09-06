@@ -28,10 +28,10 @@ class EnhancedS2BOperatorWindow(S2BOperatorWindow):
     def __init__(self):
         self.emitter_library=EmitterLibrary(); self.mode_history=ObservedModeHistory(max_entries=10)
         self.library_memory={}; self.library_confidence_memory={}; self.library_degraded=set(); self.library_operator_confirmed=set()
-        # The scenario may know E3 exists, but the operator display must not. E3 is
-        # admitted to the operator picture only after the ESM has actually detected it.
-        # Once acquired it is retained between subsequent rotating-beam illuminations.
         self.e3_acquired=False
+        # Do not leak any scenario/snapshot knowledge into the operator picture at
+        # application startup. The display remains empty until START is pressed.
+        self.system_started_once=False
         self._details_emitter_id=None
         super().__init__()
         self.setWindowTitle("S2B ESM - Operator Display"); self.resize(1750,1050); self.setMinimumSize(1250,760); self.details.setMinimumHeight(380)
@@ -43,6 +43,10 @@ class EnhancedS2BOperatorWindow(S2BOperatorWindow):
         self.mode_history_table=QTableWidget(1,10); self.mode_history_table.setVerticalHeaderLabels(["MODE"]); self.mode_history_table.horizontalHeader().setVisible(False); self.mode_history_table.setFixedHeight(58); self.mode_history_table.setSelectionMode(QTableWidget.NoSelection); self.mode_history_table.setFocusPolicy(Qt.NoFocus)
         table_index=layout.indexOf(self.emitter_table); layout.insertWidget(table_index,self.mode_history_title); layout.insertWidget(table_index+1,self.mode_history_table)
         self.confirm_library_button=QPushButton("CONFIRM LIBRARY ID"); self.confirm_library_button.clicked.connect(self._confirm_library_id); layout.insertWidget(table_index+2,self.confirm_library_button)
+
+    def start_system(self):
+        self.system_started_once=True
+        super().start_system()
 
     def reset_system(self):
         self.mode_history.clear(); self.library_memory.clear(); self.library_confidence_memory.clear(); self.library_degraded.clear(); self.library_operator_confirmed.clear(); self.e3_acquired=False; self._details_emitter_id=None; super().reset_system()
@@ -70,15 +74,33 @@ class EnhancedS2BOperatorWindow(S2BOperatorWindow):
         if e.get("library_id") not in ("NAVRADAR","NAVRADAR?"):return
         self.library_operator_confirmed.add(eid); self.library_degraded.discard(eid); self._assign_library(e); self._populate_table(); self.polar.update_emitters(self.emitters,self.selected_emitter_index); self._show_selected_emitter(); self._update_mode_history_display()
 
+    def _show_prestart_blank(self):
+        self.emitters=[]
+        self.selected_emitter_index=0
+        self.emitter_table.setRowCount(0)
+        self.polar.update_emitters([],0)
+        self.mode_history_table.clearContents()
+        self.mode_history_title.setText("RECENT OBSERVED MODES - WAITING FOR START")
+        self.confirm_library_button.setEnabled(False)
+        self.emitter_heading.setText("NO EMITTER SELECTED")
+        self.assessment_label.setText("UNASSESSED")
+        self.assessment_label.setStyleSheet("background:#777;color:white;font-weight:700;padding:7px;")
+        self.watch_button.setEnabled(False)
+        self.details.setPlainText("Press START to begin ESM detection and emitter acquisition.")
+        self.statusBar().showMessage("ESM stopped - operator picture blank until START")
+
     def _refresh(self):
+        # Base __init__ performs an initial refresh. Suppress it so E1/E2/E3 do not
+        # appear simply because the simulator knows they exist.
+        if not self.system_started_once:
+            self._show_prestart_blank()
+            return
+
         super()._refresh()
         if not self.emitters:return
 
-        # The base physical-script experiment constructs E3 from scenario state even
-        # before any RF has crossed the ESM detection threshold. That was useful for
-        # early development but leaks scenario truth into the operator picture.
-        # Acquire E3 only on the first actual ESM detection, then coast/retain it so a
-        # rotating radar does not disappear between beam visits.
+        # E3 is admitted only after its first actual threshold crossing. Once acquired,
+        # retain/coast it between rotating-beam detections until a real tracker is added.
         e3=next((e for e in self.emitters if e["emitter_id"]=="E3"),None)
         if e3 is not None and e3.get("current",{}).get("detected",False): self.e3_acquired=True
         if not self.e3_acquired:
