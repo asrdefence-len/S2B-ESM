@@ -32,14 +32,17 @@ def _configure_axes_with_legend(self):
                markeredgecolor="black", markersize=8, label="THREAT"),
     ]
 
+    # Place the assessment key in the unused upper-left margin of the canvas,
+    # completely clear of the circular bearing plot.
     self.axes.legend(
         handles=legend_items,
         title="ASSESSMENT",
-        loc="upper left",
-        bbox_to_anchor=(-0.12, 1.08),
+        loc="upper right",
+        bbox_to_anchor=(-0.18, 1.08),
         framealpha=0.92,
         fontsize=8,
         title_fontsize=8,
+        borderaxespad=0.0,
     )
 
 
