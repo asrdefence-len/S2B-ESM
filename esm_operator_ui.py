@@ -132,9 +132,10 @@ class S2BOperatorWindow(QMainWindow):
         self.extractor = None
         self.watched_emitters = set()
 
-        # Long-timescale E3 navigation-radar experiment. This is intentionally
-        # persistent across UI refreshes, unlike the finite E1/E2 IQ snapshot.
-        self.nav_start_monotonic = time.monotonic()
+        # Long-timescale E3 navigation-radar experiment. Simulation time is
+        # explicitly pause/resume capable: STOP freezes it, START resumes it.
+        self.nav_elapsed_s = 0.0
+        self.nav_resume_monotonic = None
         self.nav_last_sample_s = 0.0
         self.nav_beam = RotatingSincBeam(
             beamwidth_deg=3.0, scan_rate_rpm=30.0,
@@ -185,6 +186,9 @@ class S2BOperatorWindow(QMainWindow):
         self.stop_button = QPushButton("STOP")
         self.stop_button.clicked.connect(self.stop_system)
         top.addWidget(self.stop_button)
+        self.reset_button = QPushButton("RESET")
+        self.reset_button.clicked.connect(self.reset_system)
+        top.addWidget(self.reset_button)
         self.exit_button = QPushButton("EXIT")
         self.exit_button.clicked.connect(self.close)
         top.addWidget(self.exit_button)
@@ -235,8 +239,8 @@ class S2BOperatorWindow(QMainWindow):
         splitter.addWidget(right)
         splitter.setSizes([880, 570])
         footer = QLabel(
-            "Colour = system assessment. Gold ring/* = operator WATCH. "
-            "Radial position is visual separation only and does NOT represent range.")
+            "START resumes. STOP pauses. RESET clears emitter behaviour history and restarts the scenario. "
+            "Colour = system assessment; gold ring/* = operator WATCH. Radial position is not range.")
         footer.setStyleSheet("color: #666;")
         root.addWidget(footer)
 
@@ -250,7 +254,8 @@ class S2BOperatorWindow(QMainWindow):
             self.status_label.setStyleSheet("background:#555;color:white;font-weight:700;padding:6px;")
 
     def _reset_nav_radar(self):
-        self.nav_start_monotonic = time.monotonic()
+        self.nav_elapsed_s = 0.0
+        self.nav_resume_monotonic = time.monotonic() if self.running else None
         self.nav_last_sample_s = 0.0
         self.nav_tracker = EmitterIlluminationTracker(
             history_s=30.0, illumination_threshold_db=-18.0,
@@ -265,15 +270,34 @@ class S2BOperatorWindow(QMainWindow):
         if self.running:
             return
         self.running = True
-        self._reset_nav_radar()
+        self.nav_resume_monotonic = time.monotonic()
         self._set_status("RUNNING")
         self.timer.start()
         self._refresh()
 
     def stop_system(self):
+        if not self.running:
+            return
+        if self.nav_resume_monotonic is not None:
+            self.nav_elapsed_s += time.monotonic() - self.nav_resume_monotonic
+        self.nav_resume_monotonic = None
         self.running = False
         self.timer.stop()
         self._set_status("STOPPED")
+
+    def reset_system(self):
+        was_running = self.running
+        self.extractor = None
+        self.selected_emitter_index = 0
+        self.watched_emitters.clear()
+        self._reset_nav_radar()
+        if was_running:
+            self.nav_resume_monotonic = time.monotonic()
+            self.timer.start()
+            self._set_status("RUNNING")
+        else:
+            self._set_status("STOPPED")
+        self._refresh()
 
     def closeEvent(self, event):
         self.timer.stop()
@@ -354,7 +378,10 @@ class S2BOperatorWindow(QMainWindow):
         """Advance E3 at 10 ms internally so a 3-degree beam is not missed by the 750 ms UI timer."""
         if not self.running:
             return
-        now_s = time.monotonic() - self.nav_start_monotonic
+        running_delta_s = 0.0
+        if self.nav_resume_monotonic is not None:
+            running_delta_s = time.monotonic() - self.nav_resume_monotonic
+        now_s = self.nav_elapsed_s + running_delta_s
         t = self.nav_last_sample_s
         while t <= now_s + 1e-9:
             gain_db = self.nav_beam.gain_db(135.0, t)
@@ -369,7 +396,8 @@ class S2BOperatorWindow(QMainWindow):
         emitter_id = "E3"
         current = {"frequency_hz": 9.410e9, "modulation": "CW", "pri_s": 1.0e-3,
                    "pri_pattern": "STABLE", "pulse_width_s": 5.0e-6,
-                   "amplitude_dbfs": self.nav_level_dbfs, "pulse_count": max(0, int(self.nav_last_sample_s / 0.001)),
+                   "amplitude_dbfs": self.nav_level_dbfs,
+                   "pulse_count": max(0, int(self.nav_last_sample_s / 0.001)),
                    "track_id": 3, "end_toa_s": self.nav_last_sample_s}
         return {"emitter_id": emitter_id, "aoa_deg": 135.0, "state": state,
                 "display_color": ASSESSMENT_COLORS.get(state, ASSESSMENT_COLORS["UNASSESSED"]),
@@ -452,20 +480,29 @@ class S2BOperatorWindow(QMainWindow):
         pri = "UNRESOLVED" if current["pri_s"] is None else f"{current['pri_s'] * 1e6:.1f} us"
         track_ids = ", ".join(f"T{track['track_id']}" for track in emitter["tracks"])
         lines = ["CURRENT OBSERVED STATE", "----------------------",
-            f"Physical emitter : {emitter['emitter_id']}", f"Bearing          : {emitter['aoa_deg']:.1f} deg",
-            f"Operator watch   : {'YES' if watched else 'NO'}", f"System assessment: {emitter['state']}",
-            f"Sequence tracks  : {track_ids}", f"RF               : {current['frequency_hz'] / 1e6:.3f} MHz",
-            f"PRI median       : {pri}", f"PRI pattern      : {current['pri_pattern']}",
-            f"Pulse width      : {current['pulse_width_s'] * 1e6:.3f} us", f"Waveform family  : {current['modulation']}",
-            f"Level            : {current['amplitude_dbfs']:.2f} dBFS", f"Pulses           : {current['pulse_count']}",
-            f"Track confidence : {100.0 * emitter['track_confidence']:.1f}%", "", "BEHAVIOUR / CHANGE", "------------------"]
+            f"Physical emitter : {emitter['emitter_id']}",
+            f"Bearing          : {emitter['aoa_deg']:.1f} deg",
+            f"Operator watch   : {'YES' if watched else 'NO'}",
+            f"System assessment: {emitter['state']}",
+            f"Sequence tracks  : {track_ids}",
+            f"RF               : {current['frequency_hz'] / 1e6:.3f} MHz",
+            f"PRI median       : {pri}",
+            f"PRI pattern      : {current['pri_pattern']}",
+            f"Pulse width      : {current['pulse_width_s'] * 1e6:.3f} us",
+            f"Waveform family  : {current['modulation']}",
+            f"Level            : {current['amplitude_dbfs']:.2f} dBFS",
+            f"Pulses           : {current['pulse_count']}",
+            f"Track confidence : {100.0 * emitter['track_confidence']:.1f}%",
+            "", "BEHAVIOUR / CHANGE", "------------------"]
 
         illumination = emitter.get("illumination")
         if illumination is not None:
             period = "UNRESOLVED" if illumination.scan_period_s is None else f"{illumination.scan_period_s:.3f} s"
             rpm = "UNRESOLVED" if illumination.scan_rate_rpm is None else f"{illumination.scan_rate_rpm:.1f} RPM"
-            lines.extend([f"Illumination     : {illumination.state}", f"Scan period      : {period}",
-                f"Estimated rate   : {rpm}", f"Period evidence  : {100.0 * illumination.confidence:.1f}%",
+            lines.extend([f"Illumination     : {illumination.state}",
+                f"Scan period      : {period}",
+                f"Estimated rate   : {rpm}",
+                f"Period evidence  : {100.0 * illumination.confidence:.1f}%",
                 f"Baseline         : {illumination.baseline_state or 'NOT ESTABLISHED'}"])
             if illumination.recent_change:
                 lines.append(f"Recent change    : {illumination.recent_change}")
