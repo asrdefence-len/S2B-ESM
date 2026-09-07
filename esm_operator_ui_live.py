@@ -6,8 +6,9 @@ waveform processing on the GUI thread.
 """
 
 import sys
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QPushButton
 from esm_operator_ui_enhanced import EnhancedS2BOperatorWindow
+from emitter_measurement_scatter import EmitterMeasurementScatterWindow
 from illumination_behaviour import IlluminationBehaviourManager
 from parallel_streaming_esm_processor import ParallelStreamingESMProcessor
 from simulated_streaming_source import SimulatedStreamingIQSource
@@ -19,6 +20,12 @@ class LiveS2BOperatorWindow(EnhancedS2BOperatorWindow):
 
     def __init__(self):
         super().__init__(); self.setWindowTitle("S2B ESM - Live Parallel 40 MS/s Operator Display"); self.timer.setInterval(100)
+        self.measurement_plot=None
+        # Add a diagnostic pop-out control to the existing top command row.
+        root=self.centralWidget().layout(); top=root.itemAt(0).layout() if root is not None and root.count() else None
+        self.measurement_plot_button=QPushButton("PRI / SIGNAL PLOT")
+        self.measurement_plot_button.clicked.connect(self._open_measurement_plot)
+        if top is not None: top.addWidget(self.measurement_plot_button)
 
     def _shutdown_stream(self):
         processor=getattr(self,"stream_processor",None)
@@ -32,6 +39,22 @@ class LiveS2BOperatorWindow(EnhancedS2BOperatorWindow):
         self.behaviour=IlluminationBehaviourManager(illumination_threshold_db=-8.0,persistent_s=1.0,peak_separation_s=.25,baseline_confidence_threshold=.50,change_confidence_threshold=.50,change_hold_s=5.0)
         self.last_stream_time_s=0.0
 
+    def _selected_track(self):
+        if not self.emitters or self.stream_tracker is None:return None
+        eid=self.emitters[self.selected_emitter_index]["emitter_id"]
+        return next((t for t in self.stream_tracker.tracks if t.emitter_id==eid),None)
+
+    def _open_measurement_plot(self):
+        if self.measurement_plot is None:
+            self.measurement_plot=EmitterMeasurementScatterWindow(self,max_points=2000)
+        self.measurement_plot.show(); self.measurement_plot.raise_(); self.measurement_plot.activateWindow(); self._update_measurement_plot()
+
+    def _update_measurement_plot(self):
+        if self.measurement_plot is None or not self.measurement_plot.isVisible():return
+        track=self._selected_track(); lib=None
+        if self.emitters:lib=self.emitters[self.selected_emitter_index].get("library_id")
+        self.measurement_plot.update_track(track,lib)
+
     def start_system(self):
         if self.running:return
         if self.stream_processor is None:self._new_stream()
@@ -44,22 +67,18 @@ class LiveS2BOperatorWindow(EnhancedS2BOperatorWindow):
         self.statusBar().showMessage(f"Stopped | PDWs {status.get('completed_pdws',0)} | IQ high-water {status.get('iq_high_water',0)}/{status.get('iq_queue_depth',self.IQ_QUEUE_DEPTH)} | drops {status.get('drops',0)}")
 
     def reset_system(self):
-        self.timer.stop(); self.running=False; self._shutdown_stream(); self.mode_history.clear(); self.library_memory.clear(); self.library_degraded.clear(); self.library_operator_confirmed.clear(); self.watched_emitters.clear(); self.operator_assessments.clear(); self._details_emitter_id=None; self._new_stream(); self._show_prestart_blank(); self._set_status("STOPPED")
+        self.timer.stop(); self.running=False; self._shutdown_stream(); self.mode_history.clear(); self.library_memory.clear(); self.library_degraded.clear(); self.library_operator_confirmed.clear(); self.watched_emitters.clear(); self.operator_assessments.clear(); self._details_emitter_id=None; self._new_stream(); self._show_prestart_blank(); self._set_status("STOPPED"); self._update_measurement_plot()
 
     def _refresh(self):
         if not self.running:return
         try:
             new_pdws=self.stream_processor.drain_pdws(); status=self.stream_processor.status()
             if new_pdws:self.stream_tracker.update(new_pdws)
-
-            # Behaviour may only advance through RF time for which classification
-            # is complete. Using source/front-end time here creates false empty bins
-            # whenever parallel workers are temporarily behind, corrupting scan/dwell.
             now_s=status["completed_time_s"]
             if now_s <= self.last_stream_time_s:
+                self._update_measurement_plot()
                 self.statusBar().showMessage(f"STREAM 40.0 MS/s | acquiring/classifying | RF {status['stream_time_s']:6.2f} s | safe {now_s:6.2f} s | lag {1000*status['pipeline_lag_s']:.0f} ms | PDWs {status['completed_pdws']} | DROPS {status['drops']}")
                 return
-
             out=[]
             for track in self.stream_tracker.tracks:
                 current=track.summary(); illum=self._feed_behaviour(track,new_pdws,now_s)
@@ -70,10 +89,13 @@ class LiveS2BOperatorWindow(EnhancedS2BOperatorWindow):
                 if illum.state in ("PERIODIC_SCAN","PERSISTENT_ILLUMINATION"):self.mode_history.update(eid,max(0.,now_s-.010),illum.state)
             self.emitters=out
             if self.selected_emitter_index>=len(out):self.selected_emitter_index=max(0,len(out)-1)
-            self._populate_table(); self.polar.update_emitters(out,self.selected_emitter_index); self._show_selected_emitter(); self._update_mode_history_display(); self.last_stream_time_s=now_s
+            self._populate_table(); self.polar.update_emitters(out,self.selected_emitter_index); self._show_selected_emitter(); self._update_mode_history_display(); self._update_measurement_plot(); self.last_stream_time_s=now_s
             self.statusBar().showMessage(f"STREAM 40.0 MS/s | RF {status['stream_time_s']:6.2f} s | safe {now_s:6.2f} s | lag {1000*status['pipeline_lag_s']:.0f} ms | PDWs {status['completed_pdws']} | IQ Q {status['iq_queue']}/{status['iq_queue_depth']} (max {status['iq_high_water']}) | CLASS backlog {status['classifier_backlog']}/{status['classifier_queue_depth']} | WORKERS {status['workers']} | DROPS {status['drops']}")
         except Exception as exc:
             self.timer.stop(); self.running=False; self._shutdown_stream(); self._set_status("ERROR"); self.details.setPlainText(f"Live streaming UI error:\n\n{exc}"); self.statusBar().showMessage(str(exc))
+
+    def _emitter_selected(self,row,column):
+        super()._emitter_selected(row,column); self._update_measurement_plot()
 
     @staticmethod
     def _assessment_color(state):
@@ -81,7 +103,9 @@ class LiveS2BOperatorWindow(EnhancedS2BOperatorWindow):
         return ASSESSMENT_COLORS.get(state,ASSESSMENT_COLORS["UNASSESSED"])
 
     def closeEvent(self,event):
-        self.timer.stop(); self.running=False; self._shutdown_stream(); event.accept()
+        self.timer.stop(); self.running=False; self._shutdown_stream()
+        if self.measurement_plot is not None:self.measurement_plot.close()
+        event.accept()
 
 
 def main():
