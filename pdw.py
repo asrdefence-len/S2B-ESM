@@ -11,6 +11,7 @@ class PDW:
     frequency_hz: float
     amplitude_dbfs: float
     aoa_deg: float = 45.0
+    receiver_face: int = 0  # 0=unknown; 1..4 are the four 90-degree ESM faces
     modulation_type: str = "UNKNOWN"
     modulation_bandwidth_hz: float = 0.0
     modulation_confidence: float = 0.0
@@ -18,11 +19,13 @@ class PDW:
     modulation_rejection_reason: str = ""
 
     def __str__(self):
+        face = "?" if not self.receiver_face else str(self.receiver_face)
         return (
             f"PDW {self.pdw_id:06d}  "
             f"TOA={self.toa_s:12.9f} s  "
             f"PW={self.pulse_width_s * 1e6:8.3f} us  "
             f"FREQ={self.frequency_hz / 1e6:10.3f} MHz  "
+            f"FACE={face}  "
             f"AOA={self.aoa_deg:6.1f} deg  "
             f"AMP={self.amplitude_dbfs:7.2f} dBFS  "
             f"MOD={self.modulation_type:11s}  "
