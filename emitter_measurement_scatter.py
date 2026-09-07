@@ -31,9 +31,8 @@ class EmitterMeasurementScatterWindow(QMainWindow):
         self.summary.setStyleSheet("font-weight: 600; padding: 4px;")
         layout.addWidget(self.summary)
 
-        # Use an explicit fixed axes rectangle rather than tight_layout.  Repeated
-        # removal/recreation of a colorbar under tight_layout progressively stole
-        # width from the main axes on every live refresh.
+        # Fixed axes geometry prevents the scatter plot shrinking during live updates.
+        # The colorbar has its own permanent axes and is never removed from the figure.
         self.figure = Figure(figsize=(8, 6))
         self.canvas = FigureCanvas(self.figure)
         layout.addWidget(self.canvas, stretch=1)
@@ -51,17 +50,15 @@ class EmitterMeasurementScatterWindow(QMainWindow):
         self.axes.grid(True, alpha=0.25)
         self.axes.text(0.5, 0.5, message, transform=self.axes.transAxes,
                        ha="center", va="center")
-        self._clear_colorbar()
+        self._reset_colorbar_axes()
         self.canvas.draw_idle()
 
-    def _clear_colorbar(self):
-        if self._colorbar is not None:
-            try:
-                self._colorbar.remove()
-            except Exception:
-                pass
-            self._colorbar = None
-        self._colorbar_axes.clear()
+    def _reset_colorbar_axes(self):
+        # Do NOT call Colorbar.remove().  With a user-supplied cax, remove() can
+        # detach that axes from the Figure.  A subsequent cax.clear() then fails
+        # because cax.figure is None.  Keep the dedicated cax attached forever.
+        self._colorbar = None
+        self._colorbar_axes.cla()
         self._colorbar_axes.set_visible(False)
 
     def update_track(self, track, library_id=None):
@@ -102,9 +99,8 @@ class EmitterMeasurementScatterWindow(QMainWindow):
         self.axes.set_ylabel("Measured signal strength (dBFS)")
         self.axes.grid(True, alpha=0.25)
 
-        # Reuse a dedicated colorbar axes.  The main scatter axes therefore keeps
-        # exactly the same geometry regardless of how many live updates occur.
-        self._clear_colorbar()
+        # Reuse the permanent colorbar axes; never remove it from the Figure.
+        self._reset_colorbar_axes()
         self._colorbar_axes.set_visible(True)
         self._colorbar = self.figure.colorbar(scatter, cax=self._colorbar_axes)
         self._colorbar.set_label("RF time (s)")
