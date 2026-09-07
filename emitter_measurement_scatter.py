@@ -1,9 +1,12 @@
 """Pop-out diagnostic plot for the selected streaming emitter.
 
-Each point represents one measured inter-pulse interval for a tracked emitter:
-    x = PRI derived from consecutive measured PDW TOAs
+The scatter deliberately shows pulse-level PRI only:
+    x = short inter-pulse interval derived from consecutive measured PDW TOAs
     y = measured pulse amplitude in dBFS
     colour = RF time of the later pulse
+
+Long inter-pulse gaps are not PRI.  They delimit illumination visits and are used
+separately to estimate visit-to-visit/revisit timing for the diagnostic header.
 
 The window is diagnostic only; it does not feed association, library matching or
 behaviour inference.
@@ -18,6 +21,11 @@ from matplotlib.colors import Normalize
 
 
 class EmitterMeasurementScatterWindow(QMainWindow):
+    # Anything above 10 ms is treated as a break between pulse trains rather than
+    # a pulse PRI for this diagnostic.  This is intentionally a display-side gate;
+    # it does not alter the tracker or behaviour engine.
+    MAX_PULSE_PRI_S = 0.010
+
     def __init__(self, parent=None, max_points=2000):
         super().__init__(parent)
         self.max_points = int(max_points)
@@ -36,9 +44,6 @@ class EmitterMeasurementScatterWindow(QMainWindow):
         self.canvas = FigureCanvas(self.figure)
         layout.addWidget(self.canvas, stretch=1)
 
-        # Fixed axes geometry.  Create the scatter and colorbar ONCE and update
-        # their data in place.  Recreating Colorbar objects on every Qt refresh
-        # can recursively wrap Matplotlib's axes locator and eventually crash.
         self.axes = self.figure.add_axes([0.10, 0.12, 0.72, 0.80])
         self._colorbar_axes = self.figure.add_axes([0.86, 0.12, 0.025, 0.80])
         self._norm = Normalize(vmin=0.0, vmax=1.0)
@@ -71,6 +76,25 @@ class EmitterMeasurementScatterWindow(QMainWindow):
                                        ha="center", va="center")
         self.canvas.draw_idle()
 
+    @classmethod
+    def _revisit_period_s(cls, toas):
+        """Estimate illumination visit start-to-start period from measured TOAs."""
+        if len(toas) < 3:
+            return None
+        gaps = np.diff(toas)
+        break_indices = np.flatnonzero(gaps > cls.MAX_PULSE_PRI_S)
+        if len(break_indices) == 0:
+            return None
+        # First observed pulse starts visit 1; each pulse immediately after a long
+        # gap starts the next visit.  Start-to-start differences represent revisit
+        # period, unlike the long gap itself which excludes the illumination width.
+        starts = np.concatenate(([toas[0]], toas[break_indices + 1]))
+        if len(starts) < 2:
+            return None
+        periods = np.diff(starts)
+        periods = periods[np.isfinite(periods) & (periods > cls.MAX_PULSE_PRI_S)]
+        return float(np.median(periods)) if len(periods) else None
+
     def update_track(self, track, library_id=None):
         if track is None:
             self.summary.setText("Select an emitter in the main display.")
@@ -85,16 +109,25 @@ class EmitterMeasurementScatterWindow(QMainWindow):
 
         toas = np.asarray([p.toa_s for p in pdws], dtype=float)
         amps = np.asarray([p.amplitude_dbfs for p in pdws], dtype=float)
-        pri_us = np.diff(toas) * 1e6
-        point_amp = amps[1:]
-        point_time = toas[1:]
+        intervals_s = np.diff(toas)
+        point_amp_all = amps[1:]
+        point_time_all = toas[1:]
 
-        valid = np.isfinite(pri_us) & np.isfinite(point_amp) & np.isfinite(point_time) & (pri_us > 0.0)
-        pri_us = pri_us[valid]
-        point_amp = point_amp[valid]
-        point_time = point_time[valid]
+        # Separate signal-level PRI from behaviour-level illumination gaps.
+        pulse_mask = (
+            np.isfinite(intervals_s)
+            & np.isfinite(point_amp_all)
+            & np.isfinite(point_time_all)
+            & (intervals_s > 0.0)
+            & (intervals_s <= self.MAX_PULSE_PRI_S)
+        )
+        pri_us = intervals_s[pulse_mask] * 1e6
+        point_amp = point_amp_all[pulse_mask]
+        point_time = point_time_all[pulse_mask]
+        revisit_s = self._revisit_period_s(toas)
+
         if len(pri_us) == 0:
-            self.clear_plot("No valid positive PRI observations")
+            self.clear_plot("No pulse-level PRI observations below 10 ms")
             return
 
         if len(pri_us) > self.max_points:
@@ -120,11 +153,7 @@ class EmitterMeasurementScatterWindow(QMainWindow):
         self._colorbar.update_normal(self._scatter)
 
         self.axes.set_title(f"{track.emitter_id}  SIGNAL STRENGTH vs PRI")
-        self.axes.relim()
-        self.axes.autoscale_view()
 
-        # PathCollection offsets are not always included by relim(), so explicitly
-        # bound the current point cloud with a small margin.
         xmin = float(np.min(pri_us)); xmax = float(np.max(pri_us))
         ymin = float(np.min(point_amp)); ymax = float(np.max(point_amp))
         xpad = max(1.0, 0.05 * max(xmax - xmin, 1.0))
@@ -135,9 +164,10 @@ class EmitterMeasurementScatterWindow(QMainWindow):
         median_pri = float(np.median(pri_us))
         peak_amp = float(np.max(point_amp))
         label = library_id or "UNASSIGNED"
+        revisit_text = f"revisit {revisit_s:.3f} s" if revisit_s is not None else "revisit -"
         self.summary.setText(
             f"{track.emitter_id} / {label}   |   points {len(pri_us)}   |   "
-            f"median PRI {median_pri:.1f} us   |   peak {peak_amp:.1f} dBFS   |   "
-            f"latest RF time {point_time[-1]:.2f} s"
+            f"median PRI {median_pri:.1f} us   |   {revisit_text}   |   "
+            f"peak {peak_amp:.1f} dBFS   |   latest RF time {point_time[-1]:.2f} s"
         )
         self.canvas.draw_idle()
