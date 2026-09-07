@@ -1,7 +1,7 @@
 import numpy as np
 
 from pdw import PDW
-from operational_waveform_classifier_cyclic import CyclicOperationalWaveformClassifier
+from operational_waveform_classifier_cyclic_fast import FastCyclicOperationalWaveformClassifier
 
 
 class PDWExtractor:
@@ -10,7 +10,7 @@ class PDWExtractor:
         self.center_frequency_hz = center_frequency_hz
         self.default_aoa_deg = float(default_aoa_deg) % 360.0
         self.next_pdw_id = 1
-        self.waveform_classifier = CyclicOperationalWaveformClassifier(sample_rate_hz)
+        self.waveform_classifier = FastCyclicOperationalWaveformClassifier(sample_rate_hz)
 
     def _fit_phase_model(self, pulse_iq):
         """Fit phase(t) = a*t^2 + b*t + c for RF frequency/BW observables."""
