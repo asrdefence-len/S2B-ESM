@@ -27,21 +27,13 @@ class IlluminationAssessment:
 class EmitterIlluminationTracker:
     """Compact per-physical-emitter amplitude/illumination history.
 
-    The tracker consumes low-rate amplitude observations rather than IQ. One small
-    tracker can therefore be maintained for every persistent physical emitter.
-
-    Baseline logic is deliberately conservative:
-      * startup learning is UNASSESSED, not CHANGED;
-      * PERIODIC_SCAN becomes the baseline only when evidence is > 50%;
-      * after a baseline exists, a different resolved state must also exceed 50%
-        evidence before the system reports CHANGED;
-      * CHANGED is transient. If the new state persists for change_hold_s, it
-        becomes the new baseline and the emitter returns to MONITOR.
-
-    Current-state reporting is kept separate from historical evidence. When the
-    current observable state is PERSISTENT_ILLUMINATION, scan_period_s and
-    scan_rate_rpm are intentionally cleared; the most recent periodic estimate is
-    retained in previous_scan_period_s / previous_scan_rate_rpm instead.
+    Scan inference is deliberately hypothesis-forming rather than excessively
+    conservative:
+      * two separated beam crossings are enough to form a provisional scan period;
+      * a third consistent crossing raises confidence quickly;
+      * once a scan period has been learned, later crossings can rapidly reacquire
+        the same scan after a dwell instead of learning it from scratch;
+      * long persistent dwells are not inserted into the scan-peak history.
     """
 
     def __init__(
@@ -103,18 +95,73 @@ class EmitterIlluminationTracker:
                 self._peak_amp_db = amplitude_db
                 self._peak_time_s = time_s
         elif not illuminated and self._in_illumination:
-            self._finish_illumination()
+            self._finish_illumination(time_s)
 
         return self.assess(time_s)
 
-    def _finish_illumination(self):
-        if self._peak_time_s is not None:
+    def _finish_illumination(self, end_time_s):
+        duration_s = 0.0
+        if self._illumination_start_s is not None:
+            duration_s = max(0.0, float(end_time_s) - self._illumination_start_s)
+
+        # A short illumination burst is a candidate rotating-beam crossing. A
+        # long dwell is behavioural evidence in its own right and must not be
+        # allowed to corrupt the scan-period peak sequence when the dwell ends.
+        if self._peak_time_s is not None and duration_s < self.persistent_s:
             if not self.peaks or self._peak_time_s - self.peaks[-1] >= self.peak_separation_s:
                 self.peaks.append(self._peak_time_s)
+
         self._in_illumination = False
         self._illumination_start_s = None
         self._peak_time_s = None
         self._peak_amp_db = -math.inf
+
+    def _scan_estimate(self):
+        peak_list = list(self.peaks)
+        intervals = [b - a for a, b in zip(peak_list, peak_list[1:]) if b > a]
+        if not intervals:
+            return None, 0.0
+
+        # Two crossings give one interval: enough for a useful provisional scan
+        # hypothesis. Three or more crossings let consistency drive confidence.
+        if len(intervals) == 1:
+            interval = float(intervals[-1])
+            if self._last_periodic_period_s is not None:
+                remembered = float(self._last_periodic_period_s)
+                multiple = max(1, int(round(interval / remembered)))
+                expected = multiple * remembered
+                rel_error = abs(interval - expected) / max(expected, 1e-9)
+                if rel_error <= self.period_tolerance_fraction:
+                    return remembered, 0.70
+            return interval, 0.55
+
+        period = statistics.median(intervals)
+        if period <= 0.0:
+            return None, 0.0
+        deviations = [abs(x - period) / period for x in intervals]
+        consistency = max(
+            0.0,
+            1.0 - statistics.median(deviations) / self.period_tolerance_fraction,
+        )
+        # Two intervals (three crossings) should already be strong evidence.
+        evidence = min(1.0, 0.65 + 0.15 * (len(intervals) - 2))
+        confidence = consistency * evidence
+        return float(period), float(confidence)
+
+    def _remembered_scan_reacquisition(self):
+        """Use a learned scan period to reacquire SEARCH after a dwell quickly."""
+        if self._last_periodic_period_s is None or len(self.peaks) < 2:
+            return None, 0.0
+        p0, p1 = self.peaks[-2], self.peaks[-1]
+        gap = p1 - p0
+        remembered = float(self._last_periodic_period_s)
+        multiple = max(1, int(round(gap / remembered)))
+        expected = multiple * remembered
+        rel_error = abs(gap - expected) / max(expected, 1e-9)
+        if rel_error <= self.period_tolerance_fraction:
+            confidence = max(0.65, 1.0 - rel_error / self.period_tolerance_fraction)
+            return remembered, min(0.90, confidence)
+        return None, 0.0
 
     def _observable_assessment(self, now_s):
         continuous_s = 0.0
@@ -124,22 +171,11 @@ class EmitterIlluminationTracker:
         amps = [a for _, a in self.samples]
         modulation_depth = max(amps) - min(amps) if len(amps) >= 2 else 0.0
 
-        peak_list = list(self.peaks)
-        intervals = [b - a for a, b in zip(peak_list, peak_list[1:])]
-        period = None
-        periodic_confidence = 0.0
-        if len(intervals) >= 2:
-            period = statistics.median(intervals)
-            if period > 0.0:
-                deviations = [abs(x - period) / period for x in intervals]
-                consistency = max(
-                    0.0,
-                    1.0
-                    - statistics.median(deviations)
-                    / self.period_tolerance_fraction,
-                )
-                evidence = min(1.0, len(intervals) / 4.0)
-                periodic_confidence = consistency * evidence
+        period, periodic_confidence = self._scan_estimate()
+        remembered_period, remembered_confidence = self._remembered_scan_reacquisition()
+        if remembered_confidence > periodic_confidence:
+            period = remembered_period
+            periodic_confidence = remembered_confidence
 
         if continuous_s >= self.persistent_s:
             state = "PERSISTENT_ILLUMINATION"
