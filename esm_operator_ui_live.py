@@ -37,8 +37,8 @@ class LiveS2BOperatorWindow(EnhancedS2BOperatorWindow):
 
     def _new_stream(self):
         self._shutdown_stream()
-        # One 40 MS/s sector only. Centre at 9.415 GHz so E3 at 9.410 GHz and the
-        # two simple test emitters near 9.42 GHz all sit comfortably in-band.
+        # Centre the one 40 MS/s sector at 9.415 GHz.  The simple test emitters are
+        # E3=9.410, E1=9.420 and E2=9.4225 GHz, all inside this single sampled band.
         self.stream_source=SimulatedStreamingIQSource(sample_rate_hz=40_000_000,center_frequency_hz=9_415_000_000,block_samples=self.BLOCK_SAMPLES,noise_std=.02)
         self.stream_processor=ParallelStreamingESMProcessor(self.stream_source,workers=self.WORKERS,iq_queue_depth=self.IQ_QUEUE_DEPTH,classifier_queue_depth=self.CLASSIFIER_QUEUE_DEPTH,result_queue_depth=self.RESULT_QUEUE_DEPTH,realtime_source=True)
         self.stream_tracker=StreamingEmitterTracker(frequency_gate_hz=2_000_000.0)
@@ -52,7 +52,7 @@ class LiveS2BOperatorWindow(EnhancedS2BOperatorWindow):
 
     def _open_measurement_plot(self):
         if self.measurement_plot is None:self.measurement_plot=EmitterMeasurementScatterWindow(self,max_points=2000)
-        self.measurement_plot.show();self.measurement_plot.raise_();self.measurement_plot.activateWindow();self._update_measurement_plot()
+        self.measurement_plot.show(); self.measurement_plot.raise_(); self.measurement_plot.activateWindow(); self._update_measurement_plot()
         if not self.measurement_plot_timer.isActive():self.measurement_plot_timer.start()
 
     def _update_measurement_plot(self):
