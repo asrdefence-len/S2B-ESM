@@ -38,7 +38,12 @@ def _new_chain(config):
     tracker = StreamingEmitterTracker(frequency_gate_hz=config["frequency_gate_hz"])
     behaviour = IlluminationBehaviourManager(
         illumination_threshold_db=-8.0,
-        persistent_s=1.0,
+        # A real rotating beam crossing in this demonstration is only tens of
+        # milliseconds long (E1/E2/E3 scan periods and 3 degree beams). Requiring
+        # a full second of continuous illumination therefore adds unnecessary
+        # latency. 250 ms is still comfortably longer than a scan crossing but
+        # lets a true fixed dwell be recognised quickly enough for the ticker.
+        persistent_s=0.25,
         peak_separation_s=0.25,
         baseline_confidence_threshold=0.50,
         change_confidence_threshold=0.50,
