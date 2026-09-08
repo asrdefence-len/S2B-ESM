@@ -8,6 +8,11 @@ The scatter shows track-level PRI state rather than arbitrary adjacent-PDW DTOA:
 The track estimator explains missed-pulse gaps as integer multiples of a PRI and
 requires persistence before accepting a different PRI as a new state. Long gaps
 remain illumination/revisit evidence and are not plotted as PRI.
+
+The diagnostic display deliberately uses fixed PRI/PW axes and a longer display
+history than the short-memory PRI estimator. This lets an operator see both the
+old and new mode clusters after a behaviour change instead of having the previous
+cluster disappear when the estimator adapts.
 """
 
 import numpy as np
@@ -20,8 +25,13 @@ from matplotlib.colors import Normalize
 
 class EmitterMeasurementScatterWindow(QMainWindow):
     MAX_PULSE_PRI_S = 0.010
+    DISPLAY_HISTORY_S = 60.0
+    PRI_X_MIN_US = 0.0
+    PRI_X_MAX_US = 1200.0
+    PW_Y_MIN_US = 0.0
+    PW_Y_MAX_US = 20.0
 
-    def __init__(self, parent=None, max_points=2000):
+    def __init__(self, parent=None, max_points=4000):
         super().__init__(parent)
         self.max_points = int(max_points)
         self.setWindowTitle("S2B Emitter Measurement Plot")
@@ -53,6 +63,8 @@ class EmitterMeasurementScatterWindow(QMainWindow):
         self.axes.set_title(title)
         self.axes.set_xlabel("Inferred track PRI (us)")
         self.axes.set_ylabel("Measured pulse width (us)")
+        self.axes.set_xlim(self.PRI_X_MIN_US, self.PRI_X_MAX_US)
+        self.axes.set_ylim(self.PW_Y_MIN_US, self.PW_Y_MAX_US)
         self.axes.grid(True, alpha=0.25)
 
     def clear_plot(self, message="No selected emitter PRI states yet"):
@@ -63,8 +75,6 @@ class EmitterMeasurementScatterWindow(QMainWindow):
         self._scatter.changed()
         self._colorbar.update_normal(self._scatter)
         self._configure_axes("PRI STATE vs PULSE WIDTH")
-        self.axes.relim()
-        self.axes.autoscale_view()
         if self._message is not None:
             self._message.remove()
         self._message = self.axes.text(0.5, 0.5, message, transform=self.axes.transAxes,
@@ -99,12 +109,22 @@ class EmitterMeasurementScatterWindow(QMainWindow):
             self.clear_plot("Waiting for enough pulses to resolve track PRI")
             return
 
+        # Display history is intentionally longer than the PRI estimation window.
+        # Keep up to 60 seconds so a mode transition remains visible to the operator.
+        latest_time = float(history[-1][0])
+        history = [h for h in history if latest_time - float(h[0]) <= self.DISPLAY_HISTORY_S]
         history = history[-self.max_points:]
+
         point_time = np.asarray([h[0] for h in history], dtype=float)
         pri_us = np.asarray([h[1] * 1e6 for h in history], dtype=float)
         pw_us = np.asarray([h[2] * 1e6 for h in history], dtype=float)
         confidence = np.asarray([h[3] for h in history], dtype=float)
-        mask = np.isfinite(point_time) & np.isfinite(pri_us) & np.isfinite(pw_us) & (pri_us > 0.0)
+        mask = (
+            np.isfinite(point_time)
+            & np.isfinite(pri_us)
+            & np.isfinite(pw_us)
+            & (pri_us > 0.0)
+        )
         point_time = point_time[mask]
         pri_us = pri_us[mask]
         pw_us = pw_us[mask]
@@ -131,13 +151,7 @@ class EmitterMeasurementScatterWindow(QMainWindow):
         self._scatter.changed()
         self._colorbar.update_normal(self._scatter)
 
-        self.axes.set_title(f"{track.emitter_id}  PRI STATE vs PULSE WIDTH")
-        xmin = float(np.min(pri_us)); xmax = float(np.max(pri_us))
-        ymin = float(np.min(pw_us)); ymax = float(np.max(pw_us))
-        xpad = max(1.0, 0.05 * max(xmax - xmin, 1.0))
-        ypad = max(0.05, 0.05 * max(ymax - ymin, 0.1))
-        self.axes.set_xlim(xmin - xpad, xmax + xpad)
-        self.axes.set_ylim(ymin - ypad, ymax + ypad)
+        self._configure_axes(f"{track.emitter_id}  PRI STATE vs PULSE WIDTH")
 
         toas = np.asarray([p.toa_s for p in pdws], dtype=float) if pdws else np.asarray([])
         revisit_s = self._revisit_period_s(toas)
@@ -146,10 +160,11 @@ class EmitterMeasurementScatterWindow(QMainWindow):
         current_pri = float(pri_us[-1])
         current_pw = float(pw_us[-1])
         current_conf = float(confidence[-1]) if len(confidence) else 0.0
+        history_span = float(point_time[-1] - point_time[0]) if len(point_time) > 1 else 0.0
         self.summary.setText(
             f"{track.emitter_id} / {label}   |   states {len(pri_us)}   |   "
             f"PRI {current_pri:.1f} us ({100.0 * current_conf:.0f}%)   |   "
             f"PW {current_pw:.2f} us   |   {revisit_text}   |   "
-            f"latest RF time {point_time[-1]:.2f} s"
+            f"display history {history_span:.1f} s"
         )
         self.canvas.draw_idle()
