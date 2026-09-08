@@ -22,6 +22,7 @@ PRI_REL_TOL = 0.08
 PRI_ABS_TOL_S = 15e-6
 PRI_CHANGE_CONFIRMATIONS = 3
 MIN_PRI_CANDIDATE_S = 2e-6
+PRI_TO_PW_MIN_RATIO = 3.0
 
 
 def estimate_track_pri(pdws, max_pri_s=MAX_SIGNAL_PRI_S):
@@ -31,6 +32,10 @@ def estimate_track_pri(pdws, max_pri_s=MAX_SIGNAL_PRI_S):
     Each candidate is then rewarded when other DTOAs are either close to the
     candidate or close to an integer multiple of it. This suppresses 2T/3T/4T
     gaps caused by missed pulses without inventing an unobserved sub-harmonic.
+
+    A candidate must also be physically compatible with the measured pulse
+    width. A detector artefact that produces several PDWs inside one 5--7 us
+    pulse must never be accepted as a 2--5 us radar PRI.
 
     Returns (pri_s, confidence) or (None, 0.0).
     """
@@ -46,17 +51,23 @@ def estimate_track_pri(pdws, max_pri_s=MAX_SIGNAL_PRI_S):
     if len(gaps) < 3:
         return None, 0.0
 
+    widths = [
+        float(p.pulse_width_s) for p in items
+        if math.isfinite(float(p.pulse_width_s)) and float(p.pulse_width_s) > 0.0
+    ]
+    representative_pw_s = statistics.median(widths) if widths else 0.0
+    physical_min_pri_s = max(
+        MIN_PRI_CANDIDATE_S,
+        PRI_TO_PW_MIN_RATIO * representative_pw_s,
+    )
+
     def close(a, b):
         return b > 0.0 and abs(a - b) <= max(PRI_ABS_TOL_S, PRI_REL_TOL * b)
 
-    # Use observed gaps as candidates. Quantising them prevents tiny detector
-    # jitter from producing dozens of effectively identical candidates. Very
-    # small duplicate-TOA detector artefacts may quantise to zero, so reject
-    # those explicitly before any harmonic division is attempted.
     quantum = 2e-6
     candidates = sorted(set(
         q for q in (round(g / quantum) * quantum for g in gaps)
-        if math.isfinite(q) and q >= MIN_PRI_CANDIDATE_S
+        if math.isfinite(q) and q >= physical_min_pri_s
     ))
     if not candidates:
         return None, 0.0
@@ -70,6 +81,10 @@ def estimate_track_pri(pdws, max_pri_s=MAX_SIGNAL_PRI_S):
         explained = 0
         residual_sum = 0.0
         for gap in gaps:
+            # Sub-PW gaps are detector/association artefacts, not useful PRI
+            # evidence, and are deliberately excluded from the score.
+            if gap < physical_min_pri_s:
+                continue
             ratio = max(1, int(round(gap / candidate)))
             predicted = ratio * candidate
             tol = max(PRI_ABS_TOL_S, PRI_REL_TOL * candidate)
@@ -80,12 +95,11 @@ def estimate_track_pri(pdws, max_pri_s=MAX_SIGNAL_PRI_S):
                 if ratio == 1 and close(gap, candidate):
                     direct += 1
 
-        # Require repeated direct evidence for a candidate PRI. Harmonic support
-        # then makes the estimate robust to dropped/missed pulses.
-        if direct < 2:
+        usable_gaps = sum(g >= physical_min_pri_s for g in gaps)
+        if direct < 2 or usable_gaps < 3:
             continue
-        explained_fraction = explained / len(gaps)
-        direct_fraction = direct / len(gaps)
+        explained_fraction = explained / usable_gaps
+        direct_fraction = direct / usable_gaps
         mean_residual = residual_sum / explained if explained else 1.0
         score = explained_fraction + 0.35 * direct_fraction - 0.10 * mean_residual
         record = (score, explained_fraction, direct, -candidate, candidate)
@@ -140,8 +154,6 @@ class StreamingEmitterTrack:
             self.pri_state_history.append((pdw.toa_s, self.current_pri_s, pdw.pulse_width_s, confidence))
             return
 
-        # A different PRI is first treated as a possible mode change. It must
-        # persist for several independent updates before becoming the new state.
         if self._same_pri(estimate, self.candidate_pri_s):
             self.candidate_pri_count += 1
         else:
