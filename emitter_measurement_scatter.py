@@ -1,15 +1,13 @@
 """Pop-out diagnostic plot for the selected streaming emitter.
 
-The scatter deliberately shows pulse-level PRI only:
-    x = short inter-pulse interval derived from consecutive measured PDW TOAs
-    y = measured pulse amplitude in dBFS
-    colour = RF time of the later pulse
+The scatter shows track-level PRI state rather than arbitrary adjacent-PDW DTOA:
+    x = inferred fundamental PRI for the established emitter track
+    y = measured pulse width
+    colour = RF time
 
-Long inter-pulse gaps are not PRI.  They delimit illumination visits and are used
-separately to estimate visit-to-visit/revisit timing for the diagnostic header.
-
-The window is diagnostic only; it does not feed association, library matching or
-behaviour inference.
+The track estimator explains missed-pulse gaps as integer multiples of a PRI and
+requires persistence before accepting a different PRI as a new state. Long gaps
+remain illumination/revisit evidence and are not plotted as PRI.
 """
 
 import numpy as np
@@ -21,9 +19,6 @@ from matplotlib.colors import Normalize
 
 
 class EmitterMeasurementScatterWindow(QMainWindow):
-    # Anything above 10 ms is treated as a break between pulse trains rather than
-    # a pulse PRI for this diagnostic.  This is intentionally a display-side gate;
-    # it does not alter the tracker or behaviour engine.
     MAX_PULSE_PRI_S = 0.010
 
     def __init__(self, parent=None, max_points=2000):
@@ -51,23 +46,23 @@ class EmitterMeasurementScatterWindow(QMainWindow):
         self._colorbar = self.figure.colorbar(self._scatter, cax=self._colorbar_axes)
         self._colorbar.set_label("RF time (s)")
         self._message = None
-        self._configure_axes("SIGNAL STRENGTH vs PRI")
+        self._configure_axes("PRI STATE vs PULSE WIDTH")
         self.clear_plot()
 
     def _configure_axes(self, title):
         self.axes.set_title(title)
-        self.axes.set_xlabel("Measured PRI (us)")
-        self.axes.set_ylabel("Measured signal strength (dBFS)")
+        self.axes.set_xlabel("Inferred track PRI (us)")
+        self.axes.set_ylabel("Measured pulse width (us)")
         self.axes.grid(True, alpha=0.25)
 
-    def clear_plot(self, message="No selected emitter measurements yet"):
+    def clear_plot(self, message="No selected emitter PRI states yet"):
         self._scatter.set_offsets(np.empty((0, 2)))
         self._scatter.set_array(np.asarray([], dtype=float))
         self._norm.vmin = 0.0
         self._norm.vmax = 1.0
         self._scatter.changed()
         self._colorbar.update_normal(self._scatter)
-        self._configure_axes("SIGNAL STRENGTH vs PRI")
+        self._configure_axes("PRI STATE vs PULSE WIDTH")
         self.axes.relim()
         self.axes.autoscale_view()
         if self._message is not None:
@@ -78,16 +73,12 @@ class EmitterMeasurementScatterWindow(QMainWindow):
 
     @classmethod
     def _revisit_period_s(cls, toas):
-        """Estimate illumination visit start-to-start period from measured TOAs."""
         if len(toas) < 3:
             return None
         gaps = np.diff(toas)
         break_indices = np.flatnonzero(gaps > cls.MAX_PULSE_PRI_S)
         if len(break_indices) == 0:
             return None
-        # First observed pulse starts visit 1; each pulse immediately after a long
-        # gap starts the next visit.  Start-to-start differences represent revisit
-        # period, unlike the long gap itself which excludes the illumination width.
         starts = np.concatenate(([toas[0]], toas[break_indices + 1]))
         if len(starts) < 2:
             return None
@@ -102,44 +93,32 @@ class EmitterMeasurementScatterWindow(QMainWindow):
             return
 
         pdws = list(track.pdws)
-        if len(pdws) < 2:
-            self.summary.setText(f"{track.emitter_id}: waiting for enough measured pulses")
-            self.clear_plot("Waiting for two or more measured pulses")
+        history = list(getattr(track, "pri_state_history", []))
+        if not history:
+            self.summary.setText(f"{track.emitter_id}: waiting for a resolved PRI state")
+            self.clear_plot("Waiting for enough pulses to resolve track PRI")
             return
 
-        toas = np.asarray([p.toa_s for p in pdws], dtype=float)
-        amps = np.asarray([p.amplitude_dbfs for p in pdws], dtype=float)
-        intervals_s = np.diff(toas)
-        point_amp_all = amps[1:]
-        point_time_all = toas[1:]
-
-        # Separate signal-level PRI from behaviour-level illumination gaps.
-        pulse_mask = (
-            np.isfinite(intervals_s)
-            & np.isfinite(point_amp_all)
-            & np.isfinite(point_time_all)
-            & (intervals_s > 0.0)
-            & (intervals_s <= self.MAX_PULSE_PRI_S)
-        )
-        pri_us = intervals_s[pulse_mask] * 1e6
-        point_amp = point_amp_all[pulse_mask]
-        point_time = point_time_all[pulse_mask]
-        revisit_s = self._revisit_period_s(toas)
+        history = history[-self.max_points:]
+        point_time = np.asarray([h[0] for h in history], dtype=float)
+        pri_us = np.asarray([h[1] * 1e6 for h in history], dtype=float)
+        pw_us = np.asarray([h[2] * 1e6 for h in history], dtype=float)
+        confidence = np.asarray([h[3] for h in history], dtype=float)
+        mask = np.isfinite(point_time) & np.isfinite(pri_us) & np.isfinite(pw_us) & (pri_us > 0.0)
+        point_time = point_time[mask]
+        pri_us = pri_us[mask]
+        pw_us = pw_us[mask]
+        confidence = confidence[mask]
 
         if len(pri_us) == 0:
-            self.clear_plot("No pulse-level PRI observations below 10 ms")
+            self.clear_plot("No resolved track PRI states")
             return
-
-        if len(pri_us) > self.max_points:
-            pri_us = pri_us[-self.max_points:]
-            point_amp = point_amp[-self.max_points:]
-            point_time = point_time[-self.max_points:]
 
         if self._message is not None:
             self._message.remove()
             self._message = None
 
-        offsets = np.column_stack((pri_us, point_amp))
+        offsets = np.column_stack((pri_us, pw_us))
         self._scatter.set_offsets(offsets)
         self._scatter.set_array(point_time)
 
@@ -152,22 +131,25 @@ class EmitterMeasurementScatterWindow(QMainWindow):
         self._scatter.changed()
         self._colorbar.update_normal(self._scatter)
 
-        self.axes.set_title(f"{track.emitter_id}  SIGNAL STRENGTH vs PRI")
-
+        self.axes.set_title(f"{track.emitter_id}  PRI STATE vs PULSE WIDTH")
         xmin = float(np.min(pri_us)); xmax = float(np.max(pri_us))
-        ymin = float(np.min(point_amp)); ymax = float(np.max(point_amp))
+        ymin = float(np.min(pw_us)); ymax = float(np.max(pw_us))
         xpad = max(1.0, 0.05 * max(xmax - xmin, 1.0))
-        ypad = max(0.5, 0.05 * max(ymax - ymin, 1.0))
+        ypad = max(0.05, 0.05 * max(ymax - ymin, 0.1))
         self.axes.set_xlim(xmin - xpad, xmax + xpad)
         self.axes.set_ylim(ymin - ypad, ymax + ypad)
 
-        median_pri = float(np.median(pri_us))
-        peak_amp = float(np.max(point_amp))
+        toas = np.asarray([p.toa_s for p in pdws], dtype=float) if pdws else np.asarray([])
+        revisit_s = self._revisit_period_s(toas)
         label = library_id or "UNASSIGNED"
         revisit_text = f"revisit {revisit_s:.3f} s" if revisit_s is not None else "revisit -"
+        current_pri = float(pri_us[-1])
+        current_pw = float(pw_us[-1])
+        current_conf = float(confidence[-1]) if len(confidence) else 0.0
         self.summary.setText(
-            f"{track.emitter_id} / {label}   |   points {len(pri_us)}   |   "
-            f"median PRI {median_pri:.1f} us   |   {revisit_text}   |   "
-            f"peak {peak_amp:.1f} dBFS   |   latest RF time {point_time[-1]:.2f} s"
+            f"{track.emitter_id} / {label}   |   states {len(pri_us)}   |   "
+            f"PRI {current_pri:.1f} us ({100.0 * current_conf:.0f}%)   |   "
+            f"PW {current_pw:.2f} us   |   {revisit_text}   |   "
+            f"latest RF time {point_time[-1]:.2f} s"
         )
         self.canvas.draw_idle()
