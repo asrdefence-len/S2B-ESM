@@ -23,22 +23,11 @@ PRI_ABS_TOL_S = 15e-6
 PRI_CHANGE_CONFIRMATIONS = 3
 MIN_PRI_CANDIDATE_S = 2e-6
 PRI_TO_PW_MIN_RATIO = 3.0
+PRI_HISTORY_SAMPLE_S = 0.020
 
 
 def estimate_track_pri(pdws, max_pri_s=MAX_SIGNAL_PRI_S):
-    """Estimate the fundamental observed PRI for one emitter track.
-
-    Candidate PRIs are taken only from intervals that were actually observed.
-    Each candidate is then rewarded when other DTOAs are either close to the
-    candidate or close to an integer multiple of it. This suppresses 2T/3T/4T
-    gaps caused by missed pulses without inventing an unobserved sub-harmonic.
-
-    A candidate must also be physically compatible with the measured pulse
-    width. A detector artefact that produces several PDWs inside one 5--7 us
-    pulse must never be accepted as a 2--5 us radar PRI.
-
-    Returns (pri_s, confidence) or (None, 0.0).
-    """
+    """Estimate the fundamental observed PRI for one emitter track."""
     items = list(pdws)[-PRI_WINDOW_PDWS:]
     if len(items) < 4:
         return None, 0.0
@@ -73,18 +62,17 @@ def estimate_track_pri(pdws, max_pri_s=MAX_SIGNAL_PRI_S):
         return None, 0.0
 
     best = None
-
     for candidate in candidates:
         if candidate <= 0.0:
             continue
         direct = 0
         explained = 0
         residual_sum = 0.0
+        usable_gaps = 0
         for gap in gaps:
-            # Sub-PW gaps are detector/association artefacts, not useful PRI
-            # evidence, and are deliberately excluded from the score.
             if gap < physical_min_pri_s:
                 continue
+            usable_gaps += 1
             ratio = max(1, int(round(gap / candidate)))
             predicted = ratio * candidate
             tol = max(PRI_ABS_TOL_S, PRI_REL_TOL * candidate)
@@ -95,7 +83,6 @@ def estimate_track_pri(pdws, max_pri_s=MAX_SIGNAL_PRI_S):
                 if ratio == 1 and close(gap, candidate):
                     direct += 1
 
-        usable_gaps = sum(g >= physical_min_pri_s for g in gaps)
         if direct < 2 or usable_gaps < 3:
             continue
         explained_fraction = explained / usable_gaps
@@ -127,13 +114,31 @@ class StreamingEmitterTrack:
     pri_confidence: float = 0.0
     candidate_pri_s: float = None
     candidate_pri_count: int = 0
-    pri_state_history: deque = field(default_factory=lambda: deque(maxlen=2000))
+    # This is display/history data, not the short-memory estimator window.
+    # It is sampled in RF time rather than once per pulse so a 500 us emitter
+    # cannot overwrite a minute of behaviour history in one or two seconds.
+    pri_state_history: deque = field(default_factory=lambda: deque(maxlen=10000))
+    last_pri_history_s: float = None
 
     @staticmethod
     def _same_pri(a, b):
         if a is None or b is None or a <= 0.0 or b <= 0.0:
             return False
         return abs(a - b) <= max(PRI_ABS_TOL_S, PRI_REL_TOL * b)
+
+    def _record_pri_state(self, pdw, force=False):
+        if self.current_pri_s is None:
+            return
+        now_s = float(pdw.toa_s)
+        due = (
+            self.last_pri_history_s is None
+            or now_s - self.last_pri_history_s >= PRI_HISTORY_SAMPLE_S
+        )
+        if force or due:
+            self.pri_state_history.append(
+                (now_s, self.current_pri_s, float(pdw.pulse_width_s), self.pri_confidence)
+            )
+            self.last_pri_history_s = now_s
 
     def _update_pri_state(self, pdw):
         estimate, confidence = estimate_track_pri(self.pdws)
@@ -143,7 +148,7 @@ class StreamingEmitterTrack:
         if self.current_pri_s is None:
             self.current_pri_s = estimate
             self.pri_confidence = confidence
-            self.pri_state_history.append((pdw.toa_s, estimate, pdw.pulse_width_s, confidence))
+            self._record_pri_state(pdw, force=True)
             return
 
         if self._same_pri(estimate, self.current_pri_s):
@@ -151,7 +156,7 @@ class StreamingEmitterTrack:
             self.pri_confidence = confidence
             self.candidate_pri_s = None
             self.candidate_pri_count = 0
-            self.pri_state_history.append((pdw.toa_s, self.current_pri_s, pdw.pulse_width_s, confidence))
+            self._record_pri_state(pdw)
             return
 
         if self._same_pri(estimate, self.candidate_pri_s):
@@ -160,13 +165,17 @@ class StreamingEmitterTrack:
             self.candidate_pri_s = estimate
             self.candidate_pri_count = 1
 
+        changed = False
         if self.candidate_pri_count >= PRI_CHANGE_CONFIRMATIONS:
             self.current_pri_s = self.candidate_pri_s
             self.pri_confidence = confidence
             self.candidate_pri_s = None
             self.candidate_pri_count = 0
+            changed = True
 
-        self.pri_state_history.append((pdw.toa_s, self.current_pri_s, pdw.pulse_width_s, self.pri_confidence))
+        # Continue sampling the established state while a possible change is
+        # being tested, and always capture the instant a new PRI state is accepted.
+        self._record_pri_state(pdw, force=changed)
 
     def update(self, pdw):
         self.pdws.append(pdw)
