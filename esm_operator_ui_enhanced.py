@@ -2,7 +2,7 @@ import sys
 import math
 
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtWidgets import QApplication, QLabel, QTableWidget, QTableWidgetItem, QPushButton
+from PyQt5.QtWidgets import QApplication, QLabel, QTableWidget, QTableWidgetItem, QPushButton, QHeaderView
 
 from emitter_library import EmitterLibrary
 from mode_history import ObservedModeHistory
@@ -32,8 +32,8 @@ class EnhancedPolarEmitterCanvas(PolarEmitterCanvas):
 class EnhancedS2BOperatorWindow(S2BOperatorWindow):
     """Enhanced UI fed only by measured PDWs from the unified 40 MS/s stream."""
 
-    BLOCK_SAMPLES=40_000                 # 1 ms blocks
-    SIM_SECONDS_PER_REFRESH=0.100        # 100 x 1 ms blocks per UI refresh
+    BLOCK_SAMPLES=40_000
+    SIM_SECONDS_PER_REFRESH=0.100
 
     def __init__(self):
         self.emitter_library=EmitterLibrary()
@@ -49,8 +49,6 @@ class EnhancedS2BOperatorWindow(S2BOperatorWindow):
         super().__init__()
         self.setWindowTitle("S2B ESM - Unified 40 MS/s Operator Display")
         self.resize(1750,1050); self.setMinimumSize(1250,760); self.details.setMinimumHeight(380)
-        # The base timer is UI cadence only. Each tick processes a fixed amount of
-        # simulated 40 MS/s stream; later an Ettus source will supply blocks continuously.
         self.timer.setInterval(100)
         self._show_prestart_blank()
 
@@ -60,7 +58,16 @@ class EnhancedS2BOperatorWindow(S2BOperatorWindow):
         layout.removeWidget(old); old.setParent(None); self.polar=EnhancedPolarEmitterCanvas(parent); layout.insertWidget(index,self.polar,stretch=1)
         self.emitter_table.setColumnCount(8); self.emitter_table.setHorizontalHeaderLabels(["Emitter","Library","AOA","RF MHz","Waveform","State","Watch","Track conf."])
         self.mode_history_title=QLabel("RECENT OBSERVED MODES (1 s cells)"); self.mode_history_title.setStyleSheet("font-weight:700; margin-top:2px;")
-        self.mode_history_table=QTableWidget(1,10); self.mode_history_table.setVerticalHeaderLabels(["MODE"]); self.mode_history_table.horizontalHeader().setVisible(False); self.mode_history_table.setFixedHeight(58); self.mode_history_table.setSelectionMode(QTableWidget.NoSelection); self.mode_history_table.setFocusPolicy(Qt.NoFocus)
+        self.mode_history_table=QTableWidget(1,10)
+        self.mode_history_table.horizontalHeader().setVisible(False)
+        self.mode_history_table.verticalHeader().setVisible(False)
+        self.mode_history_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.mode_history_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.mode_history_table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.mode_history_table.setFixedHeight(44)
+        self.mode_history_table.setSelectionMode(QTableWidget.NoSelection)
+        self.mode_history_table.setFocusPolicy(Qt.NoFocus)
+        self.mode_history_table.setStyleSheet("QTableWidget { font-size: 9px; } QTableWidget::item { padding: 1px; }")
         table_index=layout.indexOf(self.emitter_table); layout.insertWidget(table_index,self.mode_history_title); layout.insertWidget(table_index+1,self.mode_history_table)
         self.confirm_library_button=QPushButton("CONFIRM LIBRARY ID"); self.confirm_library_button.clicked.connect(self._confirm_library_id); layout.insertWidget(table_index+2,self.confirm_library_button)
 
@@ -94,8 +101,6 @@ class EnhancedS2BOperatorWindow(S2BOperatorWindow):
         self._new_stream(); self._show_prestart_blank(); self._set_status("STOPPED")
 
     def _scenario_changed(self,_name):
-        # The unified streaming source owns its physical scenario. The old finite-IQ
-        # scenario selector is retained visually for now but cannot inject emitters.
         pass
 
     def _show_prestart_blank(self):
@@ -108,16 +113,9 @@ class EnhancedS2BOperatorWindow(S2BOperatorWindow):
 
     @staticmethod
     def _display_aoa(track):
-        # AOA estimation is not yet implemented in the single-channel 40 MS/s front
-        # end. Keep the existing simulated AOA observation for E1/E2 and use the
-        # known test-sector bearing for the 9.410 GHz candidate only as a temporary
-        # sensor stub. This does not affect detection, classification, PRI or behaviour.
         return 135.0 if abs(track.frequency_hz-9_410_000_000)<=2_000_000 else 45.0
 
     def _feed_behaviour(self, track, new_pdws, now_s):
-        # Convert sparse measured pulse amplitudes into 10 ms observation bins. Empty
-        # bins are below illumination threshold. The tracker therefore sees only the
-        # measured PDW stream, never beam azimuth, scripted received power or mode.
         relevant=[p for p in new_pdws if abs(p.frequency_hz-track.frequency_hz)<=self.stream_tracker.frequency_gate_hz]
         bin_s=.010; start=max(0.0,self.last_stream_time_s); end=now_s
         by_bin={}
@@ -203,12 +201,13 @@ class EnhancedS2BOperatorWindow(S2BOperatorWindow):
         pri="UNRESOLVED" if c["pri_s"] is None else f"{c['pri_s']*1e6:.1f} us"
         period="-" if illum.scan_period_s is None else f"{illum.scan_period_s:.3f} s"; rate="-" if illum.scan_rate_rpm is None else f"{illum.scan_rate_rpm:.1f} RPM"
         recent="-" if illum.recent_change_from is None else f"{illum.recent_change_from} -> {illum.recent_change_to}"
-        text=("EMITTER LIBRARY\n---------------\n"f"ID / confidence  : {e.get('library_id','UNKNOWN')} / {100*e.get('library_confidence',0):.0f}%\n"f"Evidence         : {e.get('library_reason','')}\n\nCURRENT MEASURED STATE\n----------------------\n"f"Physical track   : {eid}\nBearing          : {e['aoa_deg']:.1f} deg (AOA sensor stub)\nRF               : {c['frequency_hz']/1e6:.3f} MHz\nPRI median       : {pri}\nPulse width      : {c['pulse_width_s']*1e6:.3f} us\nWaveform family  : {c['modulation']}\nPeak level       : {c['amplitude_dbfs']:.2f} dBFS\nMeasured pulses  : {c['pulse_count']}\nLast detection   : {e['last_seen_s']:.3f} s\n\nBEHAVIOUR FROM MEASURED PDWs\n----------------------------\n"f"Current behaviour: {illum.state}\nEvidence         : {100*illum.confidence:.1f}%\nBaseline         : {illum.baseline_state or '-'}\nCurrent period   : {period}\nEstimated rate   : {rate}\nRecent change    : {recent}\n\nS2B INTERPRETATION\n------------------\nNo scripted E3 observation path exists. Detection, RF, PW, waveform, amplitude and illumination behaviour above originate from the common sampled-IQ/PDW chain.")
-        self.details.setPlainText(text); scrollbar.setValue(min(old_scroll,scrollbar.maximum()) if same else 0); self._details_emitter_id=eid
+        text=("EMITTER LIBRARY\n---------------\n"f"ID / confidence  : {e.get('library_id','UNKNOWN')} / {100*e.get('library_confidence',0):.0f}%\n"f"Evidence         : {e.get('library_reason','')}\n\nCURRENT MEASURED STATE\n----------------------\n"f"Physical track   : {eid}\nBearing          : {e['aoa_deg']:.1f} deg (AOA sensor stub)\nRF               : {c['frequency_hz']/1e6:.3f} MHz\nPRI median       : {pri}\nPulse width      : {c['pulse_width_s']*1e6:.3f} us\nWaveform         : {c['modulation']}\nPeak amplitude   : {c['amplitude_dbfs']:.2f} dBFS\nPulse count      : {c['pulse_count']}\nLast seen        : {e['last_seen_s']:.3f} s\n\nOBSERVED ILLUMINATION BEHAVIOUR\n-------------------------------\n"f"Current state    : {illum.state}\nConfidence       : {100*illum.confidence:.0f}%\nScan period      : {period}\nScan rate        : {rate}\nPeak count       : {illum.peak_count}\nContinuous illum : {illum.continuous_illumination_s:.2f} s\n\nSYSTEM ASSESSMENT\n-----------------\n"f"Baseline state   : {illum.baseline_state or '-'}\nBaseline conf    : {100*illum.baseline_confidence:.0f}%\nRecent change    : {recent}\nAssessment       : {e['state']}\n\nOPERATOR CONTROL\n----------------\n"+("Library identity is provisional. Confirm only if other evidence supports the physical-emitter association.\n" if e.get("library_id")=="NAVRADAR?" else "")+"WATCH highlights this emitter for continued operator attention.\nOperator assessment overrides automatic colour/state until AUTO is selected.\n")
+        self.details.setPlainText(text); self._details_emitter_id=eid
+        if same:scrollbar.setValue(min(old_scroll,scrollbar.maximum()))
 
 
 def main():
-    app=QApplication(sys.argv); app.setApplicationName("S2B ESM"); window=EnhancedS2BOperatorWindow(); window.show(); sys.exit(app.exec_())
+    app=QApplication(sys.argv); window=EnhancedS2BOperatorWindow(); window.show(); sys.exit(app.exec_())
 
 
 if __name__=="__main__":main()
