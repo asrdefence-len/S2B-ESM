@@ -11,9 +11,12 @@ Test RF placement:
     E3 NAVRADAR       : 9.4100 GHz (from scripted scenario)
 
 The E1/E2 spacing is intentionally greater than the current 2 MHz lightweight
-tracker RF gate.  The purpose of this simple harness is to validate the sampled
-IQ -> detector -> PDW -> behaviour chain, not to solve difficult deinterleaving
-at this stage.
+tracker RF gate.  For this simple harness, the E2 start time is shifted by 50 us
+relative to the legacy close-emitter scenario so its 1.3 ms train does not land
+exactly on the 1.0 ms E1/E3 pulse trains.  Exact pulse overlap creates composite
+IQ snippets whose single-pulse frequency estimate can legitimately fall between
+emitters and seed false tentative tracks; that is a later deinterleaving problem,
+not what this basic S2B behaviour demonstration is intended to test.
 """
 
 import math
@@ -27,11 +30,10 @@ from scenario_runtime import ScenarioRuntime
 from scripted_antenna_motion import ScriptedAntennaMotion
 from scenarios import get_scenario
 
-# One selected 90-degree receiver sector.  A later hardware implementation can
-# run the same chain on whichever antenna face is selected.
 RECEIVER_FACE = 1
 RECEIVER_SECTOR_AOA_DEG = 45.0
 LEGACY_RF_HZ = (9_420_000_000.0, 9_422_500_000.0)
+E2_START_OFFSET_S = 50e-6
 
 
 class SimulatedStreamingIQSource:
@@ -117,8 +119,11 @@ class SimulatedStreamingIQSource:
     def _render_e1_e2(self, iq, block_start_s, block_end_s):
         for idx, emitter in enumerate(self.legacy_scenario.emitters):
             rf_hz = LEGACY_RF_HZ[idx % len(LEGACY_RF_HZ)]
+            start_delay_s = float(emitter["start_delay_s"])
+            if idx == 1:
+                start_delay_s += E2_START_OFFSET_S
             for toa_s in self._periodic_toas(
-                float(emitter["start_delay_s"]),
+                start_delay_s,
                 float(emitter["pri_s"]),
                 block_start_s,
                 block_end_s,
@@ -213,8 +218,6 @@ class SimulatedStreamingIQSource:
             "center_frequency_hz": self.center_frequency_hz,
             "start_time_s": block_start_s,
             "sample_index": self.sample_index,
-            # One selected receiver sector is being processed.  This is a sensor
-            # measurement, not an emitter identity.
             "receiver_face": RECEIVER_FACE,
             "receiver_sector_aoa_deg": RECEIVER_SECTOR_AOA_DEG,
         }
