@@ -1,6 +1,6 @@
 scenario:
   name: nav_scan_to_dwell
-  description: E3 alternates between rotating NAV scan and fixed dwell every 10 seconds
+  description: E3 alternates between rotating NAV scan and 4-second fixed dwells
   duration_s: 120.0
 
 esm_receiver:
@@ -18,9 +18,9 @@ emitters:
     # to cross the ESM bearing; the scenario does not script illumination times.
     initial_antenna_azimuth_deg: 20.0
 
-    # Keep all mode changes aligned to integer 10-second boundaries. This makes
-    # the one-second PDW histogram and mode ticker easier to interpret because a
-    # transition is not deliberately split across neighbouring second bins.
+    # Start each dwell on an integer 10-second boundary and hold it for exactly
+    # four seconds. This keeps transitions aligned to whole-second histogram bins
+    # while giving the behaviour detector repeated short dwell events.
     timeline:
       - time_s: 0.0
         mode: NAV_SCAN
@@ -28,35 +28,65 @@ emitters:
       - time_s: 10.0
         mode: DWELL
 
+      - time_s: 14.0
+        mode: NAV_SCAN
+
       - time_s: 20.0
+        mode: DWELL
+
+      - time_s: 24.0
         mode: NAV_SCAN
 
       - time_s: 30.0
         mode: DWELL
 
+      - time_s: 34.0
+        mode: NAV_SCAN
+
       - time_s: 40.0
+        mode: DWELL
+
+      - time_s: 44.0
         mode: NAV_SCAN
 
       - time_s: 50.0
         mode: DWELL
 
+      - time_s: 54.0
+        mode: NAV_SCAN
+
       - time_s: 60.0
+        mode: DWELL
+
+      - time_s: 64.0
         mode: NAV_SCAN
 
       - time_s: 70.0
         mode: DWELL
 
+      - time_s: 74.0
+        mode: NAV_SCAN
+
       - time_s: 80.0
+        mode: DWELL
+
+      - time_s: 84.0
         mode: NAV_SCAN
 
       - time_s: 90.0
         mode: DWELL
 
+      - time_s: 94.0
+        mode: NAV_SCAN
+
       - time_s: 100.0
+        mode: DWELL
+
+      - time_s: 104.0
         mode: NAV_SCAN
 
       - time_s: 110.0
         mode: DWELL
 
-      - time_s: 120.0
+      - time_s: 114.0
         mode: NAV_SCAN
