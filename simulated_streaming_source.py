@@ -10,6 +10,10 @@ Test RF placement:
     E2 legacy Radar B : 9.4225 GHz
     E3 NAVRADAR       : 9.4100 GHz (from scripted scenario)
 
+E1 and E2 are rotating search radars rather than continuously visible pulse
+trains. Their antenna patterns cross the ESM bearing every 5 s and 7 s
+respectively, so their PDWs naturally appear and disappear as the beams scan.
+
 The E1/E2 spacing is intentionally greater than the current 2 MHz lightweight
 tracker RF gate.  For this simple harness, the E2 start time is shifted by 50 us
 relative to the legacy close-emitter scenario so its 1.3 ms train does not land
@@ -38,6 +42,9 @@ RECEIVER_FACE = 1
 RECEIVER_SECTOR_AOA_DEG = 45.0
 LEGACY_RF_HZ = (9_420_000_000.0, 9_422_500_000.0)
 E2_START_OFFSET_S = 50e-6
+LEGACY_SCAN_PERIOD_S = (5.0, 7.0)
+LEGACY_SCAN_BEAMWIDTH_DEG = 12.0
+LEGACY_SCAN_SIDELOBE_FLOOR_DB = -50.0
 
 
 class SimulatedStreamingIQSource:
@@ -120,25 +127,46 @@ class SimulatedStreamingIQSource:
             t = start_s + n0 * pri_s
         return out
 
+    @staticmethod
+    def _legacy_scan_gain(time_s, scan_period_s):
+        """Return rotating antenna gain toward the fixed ESM bearing.
+
+        The beam points at the ESM at t=0 and once per scan period thereafter.
+        A sinc-like rotating pattern gives a finite beam crossing rather than a
+        hard on/off gate, so the detector itself determines which pulses survive.
+        """
+        scan_rate_rpm = 60.0 / float(scan_period_s)
+        beam = RotatingSincBeam(
+            beamwidth_deg=LEGACY_SCAN_BEAMWIDTH_DEG,
+            scan_rate_rpm=scan_rate_rpm,
+            fixed_azimuth_deg=0.0,
+            sidelobe_floor_db=LEGACY_SCAN_SIDELOBE_FLOOR_DB,
+        )
+        return beam.gain_db(0.0, float(time_s))
+
     def _render_e1_e2(self, iq, block_start_s, block_end_s):
         for idx, emitter in enumerate(self.legacy_scenario.emitters):
             rf_hz = LEGACY_RF_HZ[idx % len(LEGACY_RF_HZ)]
+            scan_period_s = LEGACY_SCAN_PERIOD_S[idx % len(LEGACY_SCAN_PERIOD_S)]
             start_delay_s = float(emitter["start_delay_s"])
             if idx == 1:
                 start_delay_s += E2_START_OFFSET_S
+            base_amplitude = float(emitter["amplitude"])
             for toa_s in self._periodic_toas(
                 start_delay_s,
                 float(emitter["pri_s"]),
                 block_start_s,
                 block_end_s,
             ):
+                pattern_db = self._legacy_scan_gain(toa_s, scan_period_s)
+                amplitude = base_amplitude * 10.0 ** (pattern_db / 20.0)
                 self._add_pulse(
                     iq,
                     block_start_s,
                     toa_s,
                     float(emitter["pulse_width_s"]),
                     rf_hz,
-                    float(emitter["amplitude"]),
+                    amplitude,
                     modulation=emitter.get("modulation", "CW"),
                     bandwidth_hz=float(emitter.get("lfm_bandwidth_hz", 0.0)),
                 )
