@@ -134,12 +134,17 @@ class SimulatedStreamingIQSource:
 
     @staticmethod
     def _legacy_scan_gain(time_s, scan_period_s):
-        """Return rotating antenna gain toward the fixed ESM bearing."""
+        """Return rotating antenna gain toward the fixed ESM bearing.
+
+        Important: initial_azimuth_deg sets the starting angle while leaving the
+        antenna free to rotate. fixed_azimuth_deg would intentionally disable
+        rotation, which is not what E1/E2 require.
+        """
         scan_rate_rpm = 60.0 / float(scan_period_s)
         beam = RotatingSincBeam(
             beamwidth_deg=LEGACY_SCAN_BEAMWIDTH_DEG,
             scan_rate_rpm=scan_rate_rpm,
-            fixed_azimuth_deg=0.0,
+            initial_azimuth_deg=0.0,
             sidelobe_floor_db=LEGACY_SCAN_SIDELOBE_FLOOR_DB,
         )
         return beam.gain_db(0.0, float(time_s))
