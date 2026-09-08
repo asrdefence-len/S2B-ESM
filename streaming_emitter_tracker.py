@@ -4,14 +4,89 @@ This is intentionally a first tracker, not the final MHT. It associates measured
 PDWs using receiver face plus RF proximity and maintains emitter records while
 detections are absent. No scenario emitter IDs or mode truth enter this module.
 
-A new emitter is now confirmed only after several mutually consistent PDWs. A
-single bad frequency estimate or a short composite/noise event therefore remains
-tentative instead of immediately becoming E4/E5 on the operator display.
+A new emitter is confirmed only after several mutually consistent PDWs. PRI is
+estimated as a *track state*, not as the raw interval between arbitrary adjacent
+PDWs. Missed pulses therefore appear as integer multiples of the current PRI and
+do not by themselves create a new PRI state or emitter identity.
 """
 
 from collections import Counter, deque
 from dataclasses import dataclass, field
+import math
 import statistics
+
+
+MAX_SIGNAL_PRI_S = 0.010
+PRI_WINDOW_PDWS = 50
+PRI_REL_TOL = 0.08
+PRI_ABS_TOL_S = 15e-6
+PRI_CHANGE_CONFIRMATIONS = 3
+
+
+def estimate_track_pri(pdws, max_pri_s=MAX_SIGNAL_PRI_S):
+    """Estimate the fundamental observed PRI for one emitter track.
+
+    Candidate PRIs are taken only from intervals that were actually observed.
+    Each candidate is then rewarded when other DTOAs are either close to the
+    candidate or close to an integer multiple of it. This suppresses 2T/3T/4T
+    gaps caused by missed pulses without inventing an unobserved sub-harmonic.
+
+    Returns (pri_s, confidence) or (None, 0.0).
+    """
+    items = list(pdws)[-PRI_WINDOW_PDWS:]
+    if len(items) < 4:
+        return None, 0.0
+
+    toas = [float(p.toa_s) for p in items]
+    gaps = [
+        b - a for a, b in zip(toas, toas[1:])
+        if math.isfinite(a) and math.isfinite(b) and 0.0 < (b - a) <= max_pri_s
+    ]
+    if len(gaps) < 3:
+        return None, 0.0
+
+    def close(a, b):
+        return abs(a - b) <= max(PRI_ABS_TOL_S, PRI_REL_TOL * b)
+
+    # Use observed gaps as candidates. Quantising them prevents tiny detector
+    # jitter from producing dozens of effectively identical candidates.
+    quantum = 2e-6
+    candidates = sorted(set(round(g / quantum) * quantum for g in gaps if g > 0.0))
+    best = None
+
+    for candidate in candidates:
+        direct = 0
+        explained = 0
+        residual_sum = 0.0
+        for gap in gaps:
+            ratio = max(1, int(round(gap / candidate)))
+            predicted = ratio * candidate
+            tol = max(PRI_ABS_TOL_S, PRI_REL_TOL * candidate)
+            residual = abs(gap - predicted)
+            if residual <= tol:
+                explained += 1
+                residual_sum += residual / tol
+                if ratio == 1 and close(gap, candidate):
+                    direct += 1
+
+        # Require repeated direct evidence for a candidate PRI. Harmonic support
+        # then makes the estimate robust to dropped/missed pulses.
+        if direct < 2:
+            continue
+        explained_fraction = explained / len(gaps)
+        direct_fraction = direct / len(gaps)
+        mean_residual = residual_sum / explained if explained else 1.0
+        score = explained_fraction + 0.35 * direct_fraction - 0.10 * mean_residual
+        record = (score, explained_fraction, direct, -candidate, candidate)
+        if best is None or record > best:
+            best = record
+
+    if best is None:
+        return None, 0.0
+
+    _, explained_fraction, direct, _, candidate = best
+    confidence = min(1.0, 0.7 * explained_fraction + 0.3 * min(1.0, direct / 6.0))
+    return float(candidate), float(confidence)
 
 
 @dataclass
@@ -23,6 +98,52 @@ class StreamingEmitterTrack:
     receiver_face: int = 0
     pdws: deque = field(default_factory=lambda: deque(maxlen=4000))
     total_pulses: int = 0
+    current_pri_s: float = None
+    pri_confidence: float = 0.0
+    candidate_pri_s: float = None
+    candidate_pri_count: int = 0
+    pri_state_history: deque = field(default_factory=lambda: deque(maxlen=2000))
+
+    @staticmethod
+    def _same_pri(a, b):
+        if a is None or b is None:
+            return False
+        return abs(a - b) <= max(PRI_ABS_TOL_S, PRI_REL_TOL * b)
+
+    def _update_pri_state(self, pdw):
+        estimate, confidence = estimate_track_pri(self.pdws)
+        if estimate is None:
+            return
+
+        if self.current_pri_s is None:
+            self.current_pri_s = estimate
+            self.pri_confidence = confidence
+            self.pri_state_history.append((pdw.toa_s, estimate, pdw.pulse_width_s, confidence))
+            return
+
+        if self._same_pri(estimate, self.current_pri_s):
+            self.current_pri_s = 0.85 * self.current_pri_s + 0.15 * estimate
+            self.pri_confidence = confidence
+            self.candidate_pri_s = None
+            self.candidate_pri_count = 0
+            self.pri_state_history.append((pdw.toa_s, self.current_pri_s, pdw.pulse_width_s, confidence))
+            return
+
+        # A different PRI is first treated as a possible mode change. It must
+        # persist for several independent updates before becoming the new state.
+        if self._same_pri(estimate, self.candidate_pri_s):
+            self.candidate_pri_count += 1
+        else:
+            self.candidate_pri_s = estimate
+            self.candidate_pri_count = 1
+
+        if self.candidate_pri_count >= PRI_CHANGE_CONFIRMATIONS:
+            self.current_pri_s = self.candidate_pri_s
+            self.pri_confidence = confidence
+            self.candidate_pri_s = None
+            self.candidate_pri_count = 0
+
+        self.pri_state_history.append((pdw.toa_s, self.current_pri_s, pdw.pulse_width_s, self.pri_confidence))
 
     def update(self, pdw):
         self.pdws.append(pdw)
@@ -31,6 +152,7 @@ class StreamingEmitterTrack:
         if not self.receiver_face and getattr(pdw, "receiver_face", 0):
             self.receiver_face = int(pdw.receiver_face)
         self.frequency_hz = 0.98 * self.frequency_hz + 0.02 * pdw.frequency_hz
+        self._update_pri_state(pdw)
 
     def summary(self):
         items = list(self.pdws)
@@ -41,21 +163,15 @@ class StreamingEmitterTrack:
         mods = Counter(p.modulation_type for p in recent if p.modulation_type != "UNKNOWN")
         modulation = mods.most_common(1)[0][0] if mods else "UNKNOWN"
 
-        pri_s = None
-        if len(recent) >= 3:
-            toas = [p.toa_s for p in recent]
-            diffs = [b-a for a,b in zip(toas,toas[1:]) if b>a]
-            if diffs:
-                pri_s = statistics.median(diffs)
-
         good_widths = [w for w in widths if w >= 2.0e-6]
         return {
             "frequency_hz": statistics.median(frequencies) if frequencies else self.frequency_hz,
             "pulse_width_s": statistics.median(good_widths or widths) if widths else 0.0,
             "amplitude_dbfs": max(amplitudes) if amplitudes else -120.0,
             "modulation": modulation,
-            "pri_s": pri_s,
-            "pri_pattern": "STABLE" if pri_s is not None else "UNRESOLVED",
+            "pri_s": self.current_pri_s,
+            "pri_confidence": self.pri_confidence,
+            "pri_pattern": "STABLE" if self.current_pri_s is not None else "UNRESOLVED",
             "pulse_count": self.total_pulses,
             "receiver_face": self.receiver_face,
         }
