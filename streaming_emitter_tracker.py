@@ -114,17 +114,45 @@ class StreamingEmitterTrack:
     pri_confidence: float = 0.0
     candidate_pri_s: float = None
     candidate_pri_count: int = 0
-    # This is display/history data, not the short-memory estimator window.
-    # It is sampled in RF time rather than once per pulse so a 500 us emitter
-    # cannot overwrite a minute of behaviour history in one or two seconds.
     pri_state_history: deque = field(default_factory=lambda: deque(maxlen=10000))
     last_pri_history_s: float = None
+    # Exact per-RF-second PDW counts for a low-rate operator histogram. Completed
+    # seconds are retained independently of the short raw-PDW deque so the display
+    # can show a useful moving history even for a 500 us PRI emitter.
+    pdw_second_history: deque = field(default_factory=lambda: deque(maxlen=120))
+    pdw_count_second: int = None
+    pdw_count_current: int = 0
 
     @staticmethod
     def _same_pri(a, b):
         if a is None or b is None or a <= 0.0 or b <= 0.0:
             return False
         return abs(a - b) <= max(PRI_ABS_TOL_S, PRI_REL_TOL * b)
+
+    def _record_pdw_rate(self, pdw):
+        second = int(math.floor(float(pdw.toa_s)))
+        if self.pdw_count_second is None:
+            self.pdw_count_second = second
+            self.pdw_count_current = 1
+            return
+        if second == self.pdw_count_second:
+            self.pdw_count_current += 1
+            return
+        if second > self.pdw_count_second:
+            self.pdw_second_history.append((self.pdw_count_second, self.pdw_count_current))
+            for missing in range(self.pdw_count_second + 1, second):
+                self.pdw_second_history.append((missing, 0))
+            self.pdw_count_second = second
+            self.pdw_count_current = 1
+            return
+        # Association is normally time ordered. Ignore any unexpectedly late PDW
+        # for rate-history purposes rather than corrupting an already closed bin.
+
+    def pdw_rate_history(self, max_seconds=12):
+        history = list(self.pdw_second_history)
+        if self.pdw_count_second is not None:
+            history.append((self.pdw_count_second, self.pdw_count_current))
+        return history[-int(max_seconds):]
 
     def _record_pri_state(self, pdw, force=False):
         if self.current_pri_s is None:
@@ -173,14 +201,13 @@ class StreamingEmitterTrack:
             self.candidate_pri_count = 0
             changed = True
 
-        # Continue sampling the established state while a possible change is
-        # being tested, and always capture the instant a new PRI state is accepted.
         self._record_pri_state(pdw, force=changed)
 
     def update(self, pdw):
         self.pdws.append(pdw)
         self.total_pulses += 1
         self.last_seen_s = pdw.toa_s
+        self._record_pdw_rate(pdw)
         if not self.receiver_face and getattr(pdw, "receiver_face", 0):
             self.receiver_face = int(pdw.receiver_face)
         self.frequency_hz = 0.98 * self.frequency_hz + 0.02 * pdw.frequency_hz
