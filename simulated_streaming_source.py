@@ -17,6 +17,10 @@ exactly on the 1.0 ms E1/E3 pulse trains.  Exact pulse overlap creates composite
 IQ snippets whose single-pulse frequency estimate can legitimately fall between
 emitters and seed false tentative tracks; that is a later deinterleaving problem,
 not what this basic S2B behaviour demonstration is intended to test.
+
+The scripted scenario duration describes the authored behaviour timeline; it is
+not treated as an RF transmitter shutdown. After the final scripted mode change,
+E3 continues indefinitely in that final mode so the live ESM can run continuously.
 """
 
 import math
@@ -146,10 +150,14 @@ class SimulatedStreamingIQSource:
         timeline = emitter["timeline"]
         segments = []
         for i, event in enumerate(timeline):
+            # The last timeline entry is an open-ended physical mode. The YAML
+            # scenario duration is useful for scripted demonstrations/tests, but
+            # the live streaming source must not silently turn the radar off when
+            # that duration is reached.
             end = (
                 float(timeline[i + 1]["time_s"])
                 if i + 1 < len(timeline)
-                else self.scripted_runtime.duration_s
+                else math.inf
             )
             segments.append((float(event["time_s"]), end, str(event["mode"])))
         return segments
