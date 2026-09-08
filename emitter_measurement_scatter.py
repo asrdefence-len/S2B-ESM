@@ -20,7 +20,7 @@ import numpy as np
 from PyQt5.QtWidgets import QLabel, QMainWindow, QVBoxLayout, QWidget
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from matplotlib.colors import Normalize
+from matplotlib.colors import LinearSegmentedColormap, Normalize
 
 
 class EmitterMeasurementScatterWindow(QMainWindow):
@@ -52,11 +52,24 @@ class EmitterMeasurementScatterWindow(QMainWindow):
         self.axes = self.figure.add_axes([0.10, 0.12, 0.72, 0.80])
         self._colorbar_axes = self.figure.add_axes([0.86, 0.12, 0.025, 0.80])
         self._norm = Normalize(vmin=0.0, vmax=1.0)
-        # plasma preserves the time gradient but finishes in orange/red rather
-        # than bright yellow, which is difficult to see on the white plot.
-        self._scatter = self.axes.scatter(
-            [], [], c=[], s=15, alpha=0.80, norm=self._norm, cmap="plasma"
+
+        # Deliberately avoid yellow: old points are blue, then cyan/orange, and
+        # the newest RF-time points finish in strong red so a new mode cluster is
+        # immediately visible on the white background.
+        self._time_cmap = LinearSegmentedColormap.from_list(
+            "s2b_time",
+            ["#303f9f", "#00a0b0", "#f57c00", "#d32f2f"],
         )
+        self._scatter = self.axes.scatter(
+            [], [], c=[], s=22, alpha=0.90, norm=self._norm, cmap=self._time_cmap
+        )
+        # Current state is over-plotted as a larger marker so the newly accepted
+        # 500 us state is visible even when only one history sample exists yet.
+        self._current = self.axes.scatter(
+            [], [], s=80, facecolors="none", edgecolors="#b71c1c", linewidths=1.8,
+            zorder=4,
+        )
+
         self._colorbar = self.figure.colorbar(self._scatter, cax=self._colorbar_axes)
         self._colorbar.set_label("RF time (s)")
         self._message = None
@@ -74,6 +87,7 @@ class EmitterMeasurementScatterWindow(QMainWindow):
     def clear_plot(self, message="No selected emitter PRI states yet"):
         self._scatter.set_offsets(np.empty((0, 2)))
         self._scatter.set_array(np.asarray([], dtype=float))
+        self._current.set_offsets(np.empty((0, 2)))
         self._norm.vmin = 0.0
         self._norm.vmax = 1.0
         self._scatter.changed()
@@ -143,6 +157,7 @@ class EmitterMeasurementScatterWindow(QMainWindow):
         offsets = np.column_stack((pri_us, pw_us))
         self._scatter.set_offsets(offsets)
         self._scatter.set_array(point_time)
+        self._current.set_offsets(np.asarray([[pri_us[-1], pw_us[-1]]]))
 
         tmin = float(np.min(point_time))
         tmax = float(np.max(point_time))
