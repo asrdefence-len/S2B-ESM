@@ -1,7 +1,7 @@
 """Single-sector 40 MS/s IQ simulator for the unified S2B ESM front end.
 
 All three demonstration emitters are deliberately placed in the same 90-degree
-receiver sector and rendered into ONE complex IQ stream.  This keeps the live
+receiver sector and rendered into ONE complex IQ stream. This keeps the live
 processing load at 40 MS/s rather than accidentally simulating four independent
 40 MS/s receivers.
 
@@ -12,12 +12,14 @@ Test RF placement:
 
 E1 and E2 are rotating search radars rather than continuously visible pulse
 trains. Their antenna patterns cross the ESM bearing every 5 s and 7 s
-respectively, so their PDWs naturally appear and disappear as the beams scan.
+respectively. They are placed at the same 15 km range as E3 and use the same
+simple propagation/detection scaling, so sidelobes should fall below the detector
+threshold and PDWs should appear mainly during beam crossings.
 
 The E1/E2 spacing is intentionally greater than the current 2 MHz lightweight
-tracker RF gate.  For this simple harness, the E2 start time is shifted by 50 us
+tracker RF gate. For this simple harness, the E2 start time is shifted by 50 us
 relative to the legacy close-emitter scenario so its 1.3 ms train does not land
-exactly on the 1.0 ms E1/E3 pulse trains.  Exact pulse overlap creates composite
+exactly on the 1.0 ms E1/E3 pulse trains. Exact pulse overlap creates composite
 IQ snippets whose single-pulse frequency estimate can legitimately fall between
 emitters and seed false tentative tracks; that is a later deinterleaving problem,
 not what this basic S2B behaviour demonstration is intended to test.
@@ -43,8 +45,11 @@ RECEIVER_SECTOR_AOA_DEG = 45.0
 LEGACY_RF_HZ = (9_420_000_000.0, 9_422_500_000.0)
 E2_START_OFFSET_S = 50e-6
 LEGACY_SCAN_PERIOD_S = (5.0, 7.0)
-LEGACY_SCAN_BEAMWIDTH_DEG = 12.0
+LEGACY_SCAN_BEAMWIDTH_DEG = 3.0
 LEGACY_SCAN_SIDELOBE_FLOOR_DB = -50.0
+LEGACY_RANGE_KM = 15.0
+LEGACY_TX_PEAK_POWER_W = 100.0
+LEGACY_PEAK_GAIN_DBI = 25.0
 
 
 class SimulatedStreamingIQSource:
@@ -129,12 +134,7 @@ class SimulatedStreamingIQSource:
 
     @staticmethod
     def _legacy_scan_gain(time_s, scan_period_s):
-        """Return rotating antenna gain toward the fixed ESM bearing.
-
-        The beam points at the ESM at t=0 and once per scan period thereafter.
-        A sinc-like rotating pattern gives a finite beam crossing rather than a
-        hard on/off gate, so the detector itself determines which pulses survive.
-        """
+        """Return rotating antenna gain toward the fixed ESM bearing."""
         scan_rate_rpm = 60.0 / float(scan_period_s)
         beam = RotatingSincBeam(
             beamwidth_deg=LEGACY_SCAN_BEAMWIDTH_DEG,
@@ -145,13 +145,16 @@ class SimulatedStreamingIQSource:
         return beam.gain_db(0.0, float(time_s))
 
     def _render_e1_e2(self, iq, block_start_s, block_end_s):
+        rx_gain_dbi = float(self.scripted_runtime.esm_receiver["antenna_gain_dbi"])
+        threshold_dbm = float(
+            self.scripted_runtime.esm_receiver["detection_threshold_dbm"]
+        )
         for idx, emitter in enumerate(self.legacy_scenario.emitters):
             rf_hz = LEGACY_RF_HZ[idx % len(LEGACY_RF_HZ)]
             scan_period_s = LEGACY_SCAN_PERIOD_S[idx % len(LEGACY_SCAN_PERIOD_S)]
             start_delay_s = float(emitter["start_delay_s"])
             if idx == 1:
                 start_delay_s += E2_START_OFFSET_S
-            base_amplitude = float(emitter["amplitude"])
             for toa_s in self._periodic_toas(
                 start_delay_s,
                 float(emitter["pri_s"]),
@@ -159,7 +162,16 @@ class SimulatedStreamingIQSource:
                 block_end_s,
             ):
                 pattern_db = self._legacy_scan_gain(toa_s, scan_period_s)
-                amplitude = base_amplitude * 10.0 ** (pattern_db / 20.0)
+                prx_dbm = received_power_dbm(
+                    LEGACY_TX_PEAK_POWER_W,
+                    LEGACY_PEAK_GAIN_DBI,
+                    pattern_db,
+                    rf_hz,
+                    LEGACY_RANGE_KM,
+                    rx_gain_dbi,
+                )
+                amplitude = 0.10 * 10.0 ** ((prx_dbm - threshold_dbm) / 20.0)
+                amplitude = min(0.90, max(0.0, amplitude))
                 self._add_pulse(
                     iq,
                     block_start_s,
@@ -178,10 +190,6 @@ class SimulatedStreamingIQSource:
         timeline = emitter["timeline"]
         segments = []
         for i, event in enumerate(timeline):
-            # The last timeline entry is an open-ended physical mode. The YAML
-            # scenario duration is useful for scripted demonstrations/tests, but
-            # the live streaming source must not silently turn the radar off when
-            # that duration is reached.
             end = (
                 float(timeline[i + 1]["time_s"])
                 if i + 1 < len(timeline)
