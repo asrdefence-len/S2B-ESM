@@ -52,7 +52,11 @@ class EmitterMeasurementScatterWindow(QMainWindow):
         self.axes = self.figure.add_axes([0.10, 0.12, 0.72, 0.80])
         self._colorbar_axes = self.figure.add_axes([0.86, 0.12, 0.025, 0.80])
         self._norm = Normalize(vmin=0.0, vmax=1.0)
-        self._scatter = self.axes.scatter([], [], c=[], s=15, alpha=0.75, norm=self._norm)
+        # plasma preserves the time gradient but finishes in orange/red rather
+        # than bright yellow, which is difficult to see on the white plot.
+        self._scatter = self.axes.scatter(
+            [], [], c=[], s=15, alpha=0.80, norm=self._norm, cmap="plasma"
+        )
         self._colorbar = self.figure.colorbar(self._scatter, cax=self._colorbar_axes)
         self._colorbar.set_label("RF time (s)")
         self._message = None
@@ -109,8 +113,6 @@ class EmitterMeasurementScatterWindow(QMainWindow):
             self.clear_plot("Waiting for enough pulses to resolve track PRI")
             return
 
-        # Display history is intentionally longer than the PRI estimation window.
-        # Keep up to 60 seconds so a mode transition remains visible to the operator.
         latest_time = float(history[-1][0])
         history = [h for h in history if latest_time - float(h[0]) <= self.DISPLAY_HISTORY_S]
         history = history[-self.max_points:]
