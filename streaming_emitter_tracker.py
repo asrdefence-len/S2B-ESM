@@ -21,6 +21,7 @@ PRI_WINDOW_PDWS = 50
 PRI_REL_TOL = 0.08
 PRI_ABS_TOL_S = 15e-6
 PRI_CHANGE_CONFIRMATIONS = 3
+MIN_PRI_CANDIDATE_S = 2e-6
 
 
 def estimate_track_pri(pdws, max_pri_s=MAX_SIGNAL_PRI_S):
@@ -46,15 +47,25 @@ def estimate_track_pri(pdws, max_pri_s=MAX_SIGNAL_PRI_S):
         return None, 0.0
 
     def close(a, b):
-        return abs(a - b) <= max(PRI_ABS_TOL_S, PRI_REL_TOL * b)
+        return b > 0.0 and abs(a - b) <= max(PRI_ABS_TOL_S, PRI_REL_TOL * b)
 
     # Use observed gaps as candidates. Quantising them prevents tiny detector
-    # jitter from producing dozens of effectively identical candidates.
+    # jitter from producing dozens of effectively identical candidates. Very
+    # small duplicate-TOA detector artefacts may quantise to zero, so reject
+    # those explicitly before any harmonic division is attempted.
     quantum = 2e-6
-    candidates = sorted(set(round(g / quantum) * quantum for g in gaps if g > 0.0))
+    candidates = sorted(set(
+        q for q in (round(g / quantum) * quantum for g in gaps)
+        if math.isfinite(q) and q >= MIN_PRI_CANDIDATE_S
+    ))
+    if not candidates:
+        return None, 0.0
+
     best = None
 
     for candidate in candidates:
+        if candidate <= 0.0:
+            continue
         direct = 0
         explained = 0
         residual_sum = 0.0
@@ -106,7 +117,7 @@ class StreamingEmitterTrack:
 
     @staticmethod
     def _same_pri(a, b):
-        if a is None or b is None:
+        if a is None or b is None or a <= 0.0 or b <= 0.0:
             return False
         return abs(a - b) <= max(PRI_ABS_TOL_S, PRI_REL_TOL * b)
 
