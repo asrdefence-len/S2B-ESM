@@ -128,6 +128,9 @@ class StreamingEmitterTrack:
     pdw_count_second: int = None
     pdw_count_current: int = 0
     frequency_history: deque = field(default_factory=lambda: deque(maxlen=2000))
+    waterfall_history: deque = field(default_factory=lambda: deque(maxlen=12000))
+    waterfall_decimation_counter: int = 0
+    waterfall_last_frequency_hz: float = None
 
     @staticmethod
     def _same_pri(a, b):
@@ -212,6 +215,25 @@ class StreamingEmitterTrack:
     def update(self, pdw):
         self.pdws.append(pdw)
         self.frequency_history.append(float(pdw.frequency_hz))
+
+        # Long-lived, decimated display history. Preserve every RF transition and
+        # a regular sample of steady-frequency PDWs so the waterfall can cover a
+        # full rolling time window without depending on the short raw-PDW deque.
+        self.waterfall_decimation_counter += 1
+        frequency_changed = (
+            self.waterfall_last_frequency_hz is None
+            or abs(float(pdw.frequency_hz) - self.waterfall_last_frequency_hz)
+                >= HOP_CHANNEL_TOL_HZ
+        )
+        if frequency_changed or self.waterfall_decimation_counter % 8 == 0:
+            self.waterfall_history.append(
+                (
+                    float(pdw.toa_s),
+                    float(pdw.frequency_hz),
+                    float(pdw.amplitude_dbfs),
+                )
+            )
+            self.waterfall_last_frequency_hz = float(pdw.frequency_hz)
         self.total_pulses += 1
         self.last_seen_s = pdw.toa_s
         self._record_pdw_rate(pdw)
