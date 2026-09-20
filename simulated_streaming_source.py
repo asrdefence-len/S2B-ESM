@@ -51,6 +51,18 @@ LEGACY_RANGE_KM = 15.0
 LEGACY_TX_PEAK_POWER_W = 100.0
 LEGACY_PEAK_GAIN_DBI = 25.0
 
+# E3 frequency-agility experiment. All five RF channels remain comfortably
+# inside the 40 MS/s instantaneous band centred at 9.415 GHz, with guard margin
+# at the low edge and separation from the legacy E1/E2 carriers.
+E3_HOP_FREQUENCIES_HZ = (
+    9_398_000_000.0,
+    9_402_000_000.0,
+    9_406_000_000.0,
+    9_410_000_000.0,
+    9_414_000_000.0,
+)
+E3_HOP_PULSES_PER_CHANNEL = 8
+
 
 class SimulatedStreamingIQSource:
     def __init__(
@@ -217,6 +229,12 @@ class SimulatedStreamingIQSource:
             pri_s = float(state0.mode["pri_us"]) * 1e-6
             for toa_s in self._periodic_toas(segment_start, pri_s, start, end):
                 state = self.scripted_runtime.state("E3", toa_s)
+                # Hop in short pulse groups rather than retuning an LO. Because
+                # all channels are already inside the sampled 40 MHz band, this
+                # is simply a different complex carrier for each pulse group.
+                pulse_index = max(0, int(round((toa_s - segment_start) / pri_s)))
+                hop_index = (pulse_index // E3_HOP_PULSES_PER_CHANNEL) % len(E3_HOP_FREQUENCIES_HZ)
+                e3_rf_hz = E3_HOP_FREQUENCIES_HZ[hop_index]
                 motion = self.e3_motion.state(toa_s)
                 antenna = state.mode["antenna"]
                 beam = RotatingSincBeam(
@@ -230,7 +248,7 @@ class SimulatedStreamingIQSource:
                     state.tx_peak_power_w,
                     float(antenna.get("peak_gain_dbi", 0.0)),
                     pattern_db,
-                    float(state.mode["frequency_hz"]),
+                    e3_rf_hz,
                     state.range_km,
                     rx_gain_dbi,
                 )
@@ -241,7 +259,7 @@ class SimulatedStreamingIQSource:
                     block_start_s,
                     toa_s,
                     float(state.mode["pw_us"]) * 1e-6,
-                    float(state.mode["frequency_hz"]),
+                    e3_rf_hz,
                     amplitude,
                     modulation=state.mode.get("waveform", "CW"),
                     bandwidth_hz=float(state.mode.get("bandwidth_hz", 0.0)),
