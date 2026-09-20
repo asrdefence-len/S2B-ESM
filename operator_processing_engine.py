@@ -93,8 +93,9 @@ def _track_snapshot(track, illumination):
         "pri_state_history":history,
         "recent_toas":recent_toas,
         "recent_pdw_waterfall":[
-            [float(p.toa_s), float(p.frequency_hz), float(p.amplitude_dbfs)]
-            for p in recent_pdws
+            [float(toa_s), float(frequency_hz), float(amplitude_dbfs)]
+            for toa_s, frequency_hz, amplitude_dbfs
+            in track.waterfall_history
         ],
         "pdw_rate_history":[[int(sec),int(count)] for sec,count in track.pdw_rate_history(12)],
         "illumination":asdict(illumination),
