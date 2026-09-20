@@ -76,10 +76,17 @@ class LiveS2BOperatorWindow(EnhancedS2BOperatorWindow):
 
     @staticmethod
     def _display_aoa_snapshot(snapshot):
-        face = int(snapshot.get("receiver_face", 0) or 0)
-        if face: return {1:0.0,2:90.0,3:180.0,4:270.0}.get(face,45.0)
-        frequency_hz=float(snapshot.get("frequency_hz",0.0))
-        return 135.0 if abs(frequency_hz-9_410_000_000)<=2_000_000 else 45.0
+        # AOA is a property of the physical emitter and must not move when that
+        # emitter frequency-hops. The current demo has no real AOA estimator yet,
+        # so use a stable sensor stub based on the known RF region: E3's entire
+        # 9.404-9.412 GHz hop set is at 135 deg; E1/E2 remain at 45 deg.
+        current = snapshot.get("current", {}) or {}
+        hop_freqs = current.get("hop_frequencies_hz", []) or []
+        frequency_hz = float(snapshot.get("frequency_hz", 0.0))
+        e3_band = lambda f: 9_403_000_000.0 <= float(f) <= 9_413_000_000.0
+        if e3_band(frequency_hz) or any(e3_band(f) for f in hop_freqs):
+            return 135.0
+        return 45.0
 
     @staticmethod
     def _plot_track(snapshot):
