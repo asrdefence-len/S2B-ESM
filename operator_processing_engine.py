@@ -80,7 +80,8 @@ def _feed_behaviour(behaviour, track, new_pdws, start_s, end_s, frequency_gate_h
 
 def _track_snapshot(track, illumination):
     history=list(track.pri_state_history)
-    recent_toas=[float(p.toa_s) for p in list(track.pdws)[-1000:]]
+    recent_pdws=list(track.pdws)[-4000:]
+    recent_toas=[float(p.toa_s) for p in recent_pdws[-1000:]]
     return {
         "emitter_id":track.emitter_id,
         "frequency_hz":float(track.frequency_hz),
@@ -91,6 +92,10 @@ def _track_snapshot(track, illumination):
         "current":track.summary(),
         "pri_state_history":history,
         "recent_toas":recent_toas,
+        "recent_pdw_waterfall":[
+            [float(p.toa_s), float(p.frequency_hz), float(p.amplitude_dbfs)]
+            for p in recent_pdws
+        ],
         "pdw_rate_history":[[int(sec),int(count)] for sec,count in track.pdw_rate_history(12)],
         "illumination":asdict(illumination),
     }
