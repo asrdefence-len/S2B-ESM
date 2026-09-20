@@ -25,7 +25,7 @@ MIN_PRI_CANDIDATE_S = 2e-6
 PRI_TO_PW_MIN_RATIO = 3.0
 PRI_HISTORY_SAMPLE_S = 0.020
 HOP_CHANNEL_TOL_HZ = 750_000.0
-HOP_ASSOCIATION_SPAN_HZ = 18_000_000.0
+HOP_ASSOCIATION_SPAN_HZ = 10_000_000.0
 HOP_ASSOCIATION_MAX_GAP_S = 0.003
 
 
@@ -335,7 +335,23 @@ class StreamingEmitterTracker:
                 )
             ]
             if candidates:
-                track = min(candidates, key=lambda t: abs(pdw.frequency_hz-t.frequency_hz))
+                # Frequency-agile emitters must be associated primarily by pulse
+                # timing continuity, not by distance from the track's running RF
+                # mean. This prevents one physical NAVRADAR from fragmenting into
+                # a new track at each hop channel.
+                def candidate_score(t):
+                    gap = float(pdw.toa_s) - float(t.last_seen_s)
+                    if t.current_pri_s is not None and t.current_pri_s > 0.0:
+                        multiple = max(1, int(round(gap / t.current_pri_s)))
+                        timing_error = abs(gap - multiple * t.current_pri_s) / t.current_pri_s
+                    else:
+                        timing_error = 10.0
+                    rf_error = abs(pdw.frequency_hz - t.frequency_hz) / max(
+                        self.frequency_gate_hz, 1.0
+                    )
+                    return (timing_error, rf_error)
+
+                track = min(candidates, key=candidate_score)
                 track.update(pdw)
                 continue
 
@@ -343,7 +359,16 @@ class StreamingEmitterTracker:
             tcandidates = [
                 t for t in self.tentative
                 if self._same_face_values(pf, t.receiver_face)
-                and abs(pdw.frequency_hz - t.frequency_hz) <= self.frequency_gate_hz
+                and (
+                    abs(pdw.frequency_hz - t.frequency_hz) <= self.frequency_gate_hz
+                    or (
+                        pdw.toa_s - t.last_seen_s <= HOP_ASSOCIATION_MAX_GAP_S
+                        and abs(pdw.frequency_hz - t.frequency_hz) <= HOP_ASSOCIATION_SPAN_HZ
+                        and len(t.pdws) >= 2
+                        and abs(float(pdw.pulse_width_s) - float(t.pdws[-1].pulse_width_s))
+                            <= max(1.0e-6, 0.25 * float(t.pdws[-1].pulse_width_s))
+                    )
+                )
             ]
             if tcandidates:
                 tentative = min(tcandidates, key=lambda t: abs(pdw.frequency_hz-t.frequency_hz))
