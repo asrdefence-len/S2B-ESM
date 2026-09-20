@@ -53,15 +53,28 @@ def _new_chain(config):
 
 
 def _feed_behaviour(behaviour, track, new_pdws, start_s, end_s, frequency_gate_hz):
-    relevant = [p for p in new_pdws if abs(p.frequency_hz-track.frequency_hz) <= frequency_gate_hz]
+    # Behaviour must be driven by PDWs already associated with this physical
+    # emitter track. Re-filtering by distance from a single track RF breaks as
+    # soon as an emitter frequency-hops: valid hopped pulses are discarded and a
+    # true DWELL can look intermittent. The tracker has already done the emitter
+    # association, so use its assigned PDWs directly.
+    start = max(0.0, float(start_s))
+    end = max(start, float(end_s))
+    relevant = [
+        p for p in track.pdws
+        if start < float(p.toa_s) <= end + 1e-12
+    ]
+
     bin_s = 0.010
-    start = max(0.0, float(start_s)); end = max(start, float(end_s)); by_bin = {}
+    by_bin = {}
     for pdw in relevant:
-        b = int(pdw.toa_s/bin_s); by_bin[b] = max(by_bin.get(b,-120.0), pdw.amplitude_dbfs)
+        b = int(pdw.toa_s/bin_s)
+        by_bin[b] = max(by_bin.get(b,-120.0), pdw.amplitude_dbfs)
     assessment = behaviour.assessment(track.emitter_id,start)
     b0=int(start/bin_s); b1=int(__import__("math").ceil(end/bin_s))
     for b in range(b0,b1):
-        t=(b+1)*bin_s; assessment=behaviour.update(track.emitter_id,t,by_bin.get(b,-120.0))
+        t=(b+1)*bin_s
+        assessment=behaviour.update(track.emitter_id,t,by_bin.get(b,-120.0))
     return assessment
 
 
