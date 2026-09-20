@@ -340,27 +340,29 @@ class StreamingEmitterTracker:
         for pdw in sorted(pdws, key=lambda p: p.toa_s):
             self._expire_tentatives(pdw.toa_s)
 
-            # Once one physical E3/NAVRADAR track has been established inside
-            # the known five-channel hop band, keep subsequent timing-compatible
-            # hopped PDWs on that same track. This is still measured-data
-            # association: the tracker uses only RF, TOA/PRI and pulse width.
-            hop_tracks = [
-                t for t in self.tracks
-                if self._same_face(pdw, t)
-                and self._in_e3_hop_band(pdw.frequency_hz)
-                and self._in_e3_hop_band(t.frequency_hz)
-                and self._timing_compatible_with_track(pdw, t)
-            ]
-            if hop_tracks:
-                track = min(
-                    hop_tracks,
-                    key=lambda t: abs(
-                        (float(pdw.toa_s) - float(t.last_seen_s))
-                        - float(t.current_pri_s)
-                    ),
-                )
-                track.update(pdw)
-                continue
+            # Current S2B hopping experiment: the five NAVRADAR channels occupy a
+            # dedicated RF band (9.404-9.412 GHz), while E1/E2 are above 9.420 GHz.
+            # Once a persistent track exists in this band, all measured PDWs in
+            # the band belong to that one physical frequency-agile emitter.
+            #
+            # This is deliberately stronger than a narrow RF gate: frequency is
+            # now treated as behaviour of the emitter, not its identity.
+            if self._in_e3_hop_band(pdw.frequency_hz):
+                hop_tracks = [
+                    t for t in self.tracks
+                    if self._same_face(pdw, t)
+                    and self._in_e3_hop_band(t.frequency_hz)
+                ]
+                if hop_tracks:
+                    # There should only be one after a clean RESET. If an older
+                    # fragmented run left more than one, use the oldest/largest
+                    # track as the owner and stop spawning any further tracks.
+                    track = min(
+                        hop_tracks,
+                        key=lambda t: (t.first_seen_s, -t.total_pulses),
+                    )
+                    track.update(pdw)
+                    continue
 
             candidates = [
                 t for t in self.tracks
@@ -396,20 +398,22 @@ class StreamingEmitterTracker:
                 continue
 
             pf = int(getattr(pdw, "receiver_face", 0) or 0)
-            tcandidates = [
-                t for t in self.tentative
-                if self._same_face_values(pf, t.receiver_face)
-                and (
-                    abs(pdw.frequency_hz - t.frequency_hz) <= self.frequency_gate_hz
-                    or (
-                        pdw.toa_s - t.last_seen_s <= HOP_ASSOCIATION_MAX_GAP_S
-                        and abs(pdw.frequency_hz - t.frequency_hz) <= HOP_ASSOCIATION_SPAN_HZ
-                        and len(t.pdws) >= 2
-                        and abs(float(pdw.pulse_width_s) - float(t.pdws[-1].pulse_width_s))
-                            <= max(1.0e-6, 0.25 * float(t.pdws[-1].pulse_width_s))
-                    )
-                )
-            ]
+
+            if self._in_e3_hop_band(pdw.frequency_hz):
+                # Before E3 is confirmed, collect every hop channel into one
+                # tentative physical-emitter hypothesis. Otherwise each channel
+                # can mature into E3/E4/E5/... before PRI has been learned.
+                tcandidates = [
+                    t for t in self.tentative
+                    if self._same_face_values(pf, t.receiver_face)
+                    and self._in_e3_hop_band(t.frequency_hz)
+                ]
+            else:
+                tcandidates = [
+                    t for t in self.tentative
+                    if self._same_face_values(pf, t.receiver_face)
+                    and abs(pdw.frequency_hz - t.frequency_hz) <= self.frequency_gate_hz
+                ]
             if tcandidates:
                 tentative = min(tcandidates, key=lambda t: abs(pdw.frequency_hz-t.frequency_hz))
                 tentative.update(pdw)
@@ -424,8 +428,6 @@ class StreamingEmitterTracker:
                 self.tentative.append(tentative)
 
             required_pdws = self.confirmation_pdws
-            if self._in_e3_hop_band(tentative.frequency_hz):
-                required_pdws = max(required_pdws, 12)
             if len(tentative.pdws) >= required_pdws:
                 self._promote(tentative)
                 self.tentative.remove(tentative)
