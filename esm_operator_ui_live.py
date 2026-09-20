@@ -140,7 +140,11 @@ class LiveS2BOperatorWindow(EnhancedS2BOperatorWindow):
         snapshot=self.snapshot_tracks.get(eid)
         if snapshot is None:
             self.frequency_waterfall.clear_plot(f"{eid}: WAITING FOR PDWs"); return
-        self.frequency_waterfall.update_pdws(eid,snapshot.get("recent_pdw_waterfall",[]))
+        self.frequency_waterfall.update_pdws(
+            eid,
+            snapshot.get("recent_pdw_waterfall",[]),
+            now_s=float(self.latest_processing_status.get("completed_time_s", snapshot.get("last_seen_s", 0.0))),
+        )
 
     def start_system(self):
         if self.running:return
