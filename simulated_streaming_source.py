@@ -55,11 +55,11 @@ LEGACY_PEAK_GAIN_DBI = 25.0
 # inside the 40 MS/s instantaneous band centred at 9.415 GHz, with guard margin
 # at the low edge and separation from the legacy E1/E2 carriers.
 E3_HOP_FREQUENCIES_HZ = (
-    9_398_000_000.0,
-    9_402_000_000.0,
+    9_404_000_000.0,
     9_406_000_000.0,
+    9_408_000_000.0,
     9_410_000_000.0,
-    9_414_000_000.0,
+    9_412_000_000.0,
 )
 E3_HOP_PULSES_PER_CHANNEL = 8
 
