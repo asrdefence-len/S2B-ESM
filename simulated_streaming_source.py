@@ -220,7 +220,7 @@ class SimulatedStreamingIQSource:
         threshold_dbm = float(
             self.scripted_runtime.esm_receiver["detection_threshold_dbm"]
         )
-        for segment_start, segment_end, _ in self._e3_mode_segments():
+        for segment_start, segment_end, mode_name in self._e3_mode_segments():
             start = max(block_start_s, segment_start)
             end = min(block_end_s, segment_end)
             if start >= end:
@@ -229,12 +229,19 @@ class SimulatedStreamingIQSource:
             pri_s = float(state0.mode["pri_us"]) * 1e-6
             for toa_s in self._periodic_toas(segment_start, pri_s, start, end):
                 state = self.scripted_runtime.state("E3", toa_s)
-                # Hop in short pulse groups rather than retuning an LO. Because
-                # all channels are already inside the sampled 40 MHz band, this
-                # is simply a different complex carrier for each pulse group.
-                pulse_index = max(0, int(round((toa_s - segment_start) / pri_s)))
-                hop_index = (pulse_index // E3_HOP_PULSES_PER_CHANNEL) % len(E3_HOP_FREQUENCIES_HZ)
-                e3_rf_hz = E3_HOP_FREQUENCIES_HZ[hop_index]
+                # Search remains on the nominal NAVRADAR carrier. Frequency
+                # agility is introduced only in DWELL mode.
+                if str(mode_name).upper() == "DWELL":
+                    pulse_index = max(
+                        0,
+                        int(round((toa_s - segment_start) / pri_s)),
+                    )
+                    hop_index = (
+                        pulse_index // E3_HOP_PULSES_PER_CHANNEL
+                    ) % len(E3_HOP_FREQUENCIES_HZ)
+                    e3_rf_hz = E3_HOP_FREQUENCIES_HZ[hop_index]
+                else:
+                    e3_rf_hz = float(state.mode["frequency_hz"])
                 motion = self.e3_motion.state(toa_s)
                 antenna = state.mode["antenna"]
                 beam = RotatingSincBeam(
