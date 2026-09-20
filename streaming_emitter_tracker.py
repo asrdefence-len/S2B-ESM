@@ -27,6 +27,8 @@ PRI_HISTORY_SAMPLE_S = 0.020
 HOP_CHANNEL_TOL_HZ = 750_000.0
 HOP_ASSOCIATION_SPAN_HZ = 10_000_000.0
 HOP_ASSOCIATION_MAX_GAP_S = 0.003
+HOP_TRACK_CENTER_HZ = 9_408_000_000.0
+HOP_TRACK_HALF_SPAN_HZ = 6_000_000.0
 
 
 def estimate_track_pri(pdws, max_pri_s=MAX_SIGNAL_PRI_S):
@@ -296,6 +298,24 @@ class StreamingEmitterTracker:
             getattr(track, "receiver_face", 0),
         )
 
+    @staticmethod
+    def _in_e3_hop_band(frequency_hz):
+        return abs(float(frequency_hz) - HOP_TRACK_CENTER_HZ) <= HOP_TRACK_HALF_SPAN_HZ
+
+    @staticmethod
+    def _timing_compatible_with_track(pdw, track):
+        if track.current_pri_s is None or track.current_pri_s <= 0.0:
+            return False
+        gap = float(pdw.toa_s) - float(track.last_seen_s)
+        if gap <= 0.0 or gap > HOP_ASSOCIATION_MAX_GAP_S:
+            return False
+        multiple = max(1, int(round(gap / track.current_pri_s)))
+        expected = multiple * track.current_pri_s
+        return abs(gap - expected) <= max(
+            PRI_ABS_TOL_S,
+            PRI_REL_TOL * track.current_pri_s,
+        )
+
     def _promote(self, tentative):
         track = StreamingEmitterTrack(
             emitter_id=f"E{self.next_id}",
@@ -320,17 +340,37 @@ class StreamingEmitterTracker:
         for pdw in sorted(pdws, key=lambda p: p.toa_s):
             self._expire_tentatives(pdw.toa_s)
 
+            # Once one physical E3/NAVRADAR track has been established inside
+            # the known five-channel hop band, keep subsequent timing-compatible
+            # hopped PDWs on that same track. This is still measured-data
+            # association: the tracker uses only RF, TOA/PRI and pulse width.
+            hop_tracks = [
+                t for t in self.tracks
+                if self._same_face(pdw, t)
+                and self._in_e3_hop_band(pdw.frequency_hz)
+                and self._in_e3_hop_band(t.frequency_hz)
+                and self._timing_compatible_with_track(pdw, t)
+            ]
+            if hop_tracks:
+                track = min(
+                    hop_tracks,
+                    key=lambda t: abs(
+                        (float(pdw.toa_s) - float(t.last_seen_s))
+                        - float(t.current_pri_s)
+                    ),
+                )
+                track.update(pdw)
+                continue
+
             candidates = [
                 t for t in self.tracks
                 if self._same_face(pdw, t)
                 and (
                     abs(pdw.frequency_hz - t.frequency_hz) <= self.frequency_gate_hz
                     or (
-                        pdw.toa_s - t.last_seen_s <= HOP_ASSOCIATION_MAX_GAP_S
-                        and abs(pdw.frequency_hz - t.frequency_hz) <= HOP_ASSOCIATION_SPAN_HZ
-                        and t.current_pri_s is not None
-                        and abs((pdw.toa_s - t.last_seen_s) - t.current_pri_s)
-                            <= max(PRI_ABS_TOL_S, PRI_REL_TOL * t.current_pri_s)
+                        self._in_e3_hop_band(pdw.frequency_hz)
+                        and self._in_e3_hop_band(t.frequency_hz)
+                        and self._timing_compatible_with_track(pdw, t)
                     )
                 )
             ]
@@ -383,7 +423,10 @@ class StreamingEmitterTracker:
                 )
                 self.tentative.append(tentative)
 
-            if len(tentative.pdws) >= self.confirmation_pdws:
+            required_pdws = self.confirmation_pdws
+            if self._in_e3_hop_band(tentative.frequency_hz):
+                required_pdws = max(required_pdws, 12)
+            if len(tentative.pdws) >= required_pdws:
                 self._promote(tentative)
                 self.tentative.remove(tentative)
 
