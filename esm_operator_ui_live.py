@@ -11,6 +11,7 @@ from emitter_measurement_scatter import EmitterMeasurementScatterWindow
 from illumination_behaviour import IlluminationAssessment
 from operator_processing_engine import OperatorProcessingEngine
 from pdw_rate_histogram import PDWRateHistogramCanvas
+from frequency_waterfall import EmitterFrequencyWaterfallWindow
 
 
 class LiveS2BOperatorWindow(EnhancedS2BOperatorWindow):
@@ -28,6 +29,7 @@ class LiveS2BOperatorWindow(EnhancedS2BOperatorWindow):
         self.snapshot_tracks = {}
         self.latest_processing_status = {}
         self.measurement_plot = None
+        self.frequency_waterfall = None
         self.measurement_plot_timer = QTimer(self)
         self.measurement_plot_timer.setInterval(self.PLOT_REFRESH_MS)
         self.measurement_plot_timer.timeout.connect(self._update_measurement_plot)
@@ -36,8 +38,11 @@ class LiveS2BOperatorWindow(EnhancedS2BOperatorWindow):
         top = root.itemAt(0).layout() if root is not None and root.count() else None
         self.measurement_plot_button = QPushButton("PRI / SIGNAL PLOT")
         self.measurement_plot_button.clicked.connect(self._open_measurement_plot)
+        self.frequency_waterfall_button = QPushButton("FREQUENCY WATERFALL")
+        self.frequency_waterfall_button.clicked.connect(self._open_frequency_waterfall)
         if top is not None:
             top.addWidget(self.measurement_plot_button)
+            top.addWidget(self.frequency_waterfall_button)
 
     def _install_pdw_rate_plot(self):
         """Put a compact selected-emitter PDW-rate plot immediately right of polar."""
@@ -121,6 +126,22 @@ class LiveS2BOperatorWindow(EnhancedS2BOperatorWindow):
         if self.emitters:lib=self.emitters[self.selected_emitter_index].get("library_id")
         self.measurement_plot.update_track(track,lib)
 
+    def _open_frequency_waterfall(self):
+        if self.frequency_waterfall is None:
+            self.frequency_waterfall=EmitterFrequencyWaterfallWindow(self)
+        self.frequency_waterfall.show(); self.frequency_waterfall.raise_()
+        self.frequency_waterfall.activateWindow(); self._update_frequency_waterfall()
+
+    def _update_frequency_waterfall(self):
+        if self.frequency_waterfall is None or not self.frequency_waterfall.isVisible():return
+        if not self.emitters:
+            self.frequency_waterfall.clear_plot("NO EMITTER SELECTED"); return
+        eid=self.emitters[self.selected_emitter_index]["emitter_id"]
+        snapshot=self.snapshot_tracks.get(eid)
+        if snapshot is None:
+            self.frequency_waterfall.clear_plot(f"{eid}: WAITING FOR PDWs"); return
+        self.frequency_waterfall.update_pdws(eid,snapshot.get("recent_pdw_waterfall",[]))
+
     def start_system(self):
         if self.running:return
         if self.processing_engine is None:self._new_stream()
@@ -156,13 +177,13 @@ class LiveS2BOperatorWindow(EnhancedS2BOperatorWindow):
                 if illum.state in ("PERIODIC_SCAN","PERSISTENT_ILLUMINATION"):self.mode_history.update(eid,max(0.0,now_s-.010),illum.state)
             self.emitters=out
             if self.selected_emitter_index>=len(out):self.selected_emitter_index=max(0,len(out)-1)
-            self._populate_table(); self.polar.update_emitters(out,self.selected_emitter_index); self._show_selected_emitter(); self._update_mode_history_display(); self._update_pdw_rate_plot(); self.last_stream_time_s=now_s
+            self._populate_table(); self.polar.update_emitters(out,self.selected_emitter_index); self._show_selected_emitter(); self._update_mode_history_display(); self._update_pdw_rate_plot(); self._update_frequency_waterfall(); self.last_stream_time_s=now_s
             self.statusBar().showMessage(f"ENGINE + 4 WORKERS | STREAM 40.0 MS/s | RF {status.get('stream_time_s',0.0):6.2f} s | safe {now_s:6.2f} s | lag {1000*status.get('pipeline_lag_s',0.0):.0f} ms | PDWs {status.get('completed_pdws',0)} | IQ Q {status.get('iq_queue',0)}/{status.get('iq_queue_depth',self.IQ_QUEUE_DEPTH)} (max {status.get('iq_high_water',0)}) | CLASS backlog {status.get('classifier_backlog',0)}/{status.get('classifier_queue_depth',self.CLASSIFIER_QUEUE_DEPTH)} | DROPS {status.get('drops',0)}")
         except Exception as exc:
             self.timer.stop(); self.measurement_plot_timer.stop(); self.running=False; self._shutdown_engine(); self._set_status("ERROR"); self.details.setPlainText(f"Live processing/UI boundary error:\n\n{exc}"); self.statusBar().showMessage(str(exc))
 
     def _emitter_selected(self,row,column):
-        super()._emitter_selected(row,column); self._update_measurement_plot(); self._update_pdw_rate_plot()
+        super()._emitter_selected(row,column); self._update_measurement_plot(); self._update_pdw_rate_plot(); self._update_frequency_waterfall()
 
     @staticmethod
     def _assessment_color(state):
@@ -172,6 +193,7 @@ class LiveS2BOperatorWindow(EnhancedS2BOperatorWindow):
     def closeEvent(self,event):
         self.timer.stop(); self.measurement_plot_timer.stop(); self.running=False; self._shutdown_engine()
         if self.measurement_plot is not None:self.measurement_plot.close()
+        if self.frequency_waterfall is not None:self.frequency_waterfall.close()
         event.accept()
 
 
