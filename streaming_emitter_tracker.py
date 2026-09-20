@@ -24,6 +24,9 @@ PRI_CHANGE_CONFIRMATIONS = 3
 MIN_PRI_CANDIDATE_S = 2e-6
 PRI_TO_PW_MIN_RATIO = 3.0
 PRI_HISTORY_SAMPLE_S = 0.020
+HOP_CHANNEL_TOL_HZ = 750_000.0
+HOP_ASSOCIATION_SPAN_HZ = 18_000_000.0
+HOP_ASSOCIATION_MAX_GAP_S = 0.003
 
 
 def estimate_track_pri(pdws, max_pri_s=MAX_SIGNAL_PRI_S):
@@ -122,6 +125,7 @@ class StreamingEmitterTrack:
     pdw_second_history: deque = field(default_factory=lambda: deque(maxlen=120))
     pdw_count_second: int = None
     pdw_count_current: int = 0
+    frequency_history: deque = field(default_factory=lambda: deque(maxlen=2000))
 
     @staticmethod
     def _same_pri(a, b):
@@ -205,6 +209,7 @@ class StreamingEmitterTrack:
 
     def update(self, pdw):
         self.pdws.append(pdw)
+        self.frequency_history.append(float(pdw.frequency_hz))
         self.total_pulses += 1
         self.last_seen_s = pdw.toa_s
         self._record_pdw_rate(pdw)
@@ -222,6 +227,16 @@ class StreamingEmitterTrack:
         mods = Counter(p.modulation_type for p in recent if p.modulation_type != "UNKNOWN")
         modulation = mods.most_common(1)[0][0] if mods else "UNKNOWN"
 
+        # Cluster recent RF measurements into resolvable hop channels. This is
+        # deliberately observable-only: no simulator hop truth enters the track.
+        hop_channels = []
+        for f in sorted(frequencies):
+            if not hop_channels or abs(f - hop_channels[-1][-1]) > HOP_CHANNEL_TOL_HZ:
+                hop_channels.append([f])
+            else:
+                hop_channels[-1].append(f)
+        hop_centres = [statistics.median(ch) for ch in hop_channels]
+
         good_widths = [w for w in widths if w >= 2.0e-6]
         return {
             "frequency_hz": statistics.median(frequencies) if frequencies else self.frequency_hz,
@@ -233,6 +248,9 @@ class StreamingEmitterTrack:
             "pri_pattern": "STABLE" if self.current_pri_s is not None else "UNRESOLVED",
             "pulse_count": self.total_pulses,
             "receiver_face": self.receiver_face,
+            "hop_frequencies_hz": hop_centres,
+            "hop_channel_count": len(hop_centres),
+            "frequency_agile": len(hop_centres) >= 2,
         }
 
 
@@ -305,7 +323,16 @@ class StreamingEmitterTracker:
             candidates = [
                 t for t in self.tracks
                 if self._same_face(pdw, t)
-                and abs(pdw.frequency_hz - t.frequency_hz) <= self.frequency_gate_hz
+                and (
+                    abs(pdw.frequency_hz - t.frequency_hz) <= self.frequency_gate_hz
+                    or (
+                        pdw.toa_s - t.last_seen_s <= HOP_ASSOCIATION_MAX_GAP_S
+                        and abs(pdw.frequency_hz - t.frequency_hz) <= HOP_ASSOCIATION_SPAN_HZ
+                        and t.current_pri_s is not None
+                        and abs((pdw.toa_s - t.last_seen_s) - t.current_pri_s)
+                            <= max(PRI_ABS_TOL_S, PRI_REL_TOL * t.current_pri_s)
+                    )
+                )
             ]
             if candidates:
                 track = min(candidates, key=lambda t: abs(pdw.frequency_hz-t.frequency_hz))
