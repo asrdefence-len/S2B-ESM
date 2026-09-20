@@ -11,6 +11,8 @@ class EmitterFrequencyWaterfallWindow(QMainWindow):
     TIME_BINS = 160
     FREQ_BINS = 180
     SPECTRUM_LOOKBACK_S = 1.0
+    DISPLAY_FMIN_MHZ = 9350.0
+    DISPLAY_FMAX_MHZ = 9550.0
     NOISE_FLOOR_DBFS = -55.0
     NOISE_JITTER_DB = 2.0
 
@@ -61,7 +63,7 @@ class EmitterFrequencyWaterfallWindow(QMainWindow):
             origin="upper",
             aspect="auto",
             interpolation="nearest",
-            extent=[9403.0, 9413.0, self.TIME_SPAN_S, 0.0],
+            extent=[self.DISPLAY_FMIN_MHZ, self.DISPLAY_FMAX_MHZ, self.TIME_SPAN_S, 0.0],
             vmin=self._last_vmin,
             vmax=self._last_vmax,
             cmap="inferno",
@@ -139,20 +141,9 @@ class EmitterFrequencyWaterfallWindow(QMainWindow):
             self.canvas.draw_idle()
             return
 
-        # Stable RF display for the E3 experiment; for another emitter, derive a
-        # stable local span around its current observed frequencies.
-        if np.min(f) >= 9403.0 and np.max(f) <= 9413.0:
-            fmin, fmax = 9403.0, 9413.0
-        else:
-            fmin = float(np.min(f))
-            fmax = float(np.max(f))
-            if fmax - fmin < 2.0:
-                mid = .5 * (fmin + fmax)
-                fmin, fmax = mid - 1.0, mid + 1.0
-            else:
-                pad = max(.5, .08 * (fmax - fmin))
-                fmin -= pad
-                fmax += pad
+        # Fixed operator-monitor RF span: 9.35 to 9.55 GHz.
+        fmin = self.DISPLAY_FMIN_MHZ
+        fmax = self.DISPLAY_FMAX_MHZ
 
         f_edges = np.linspace(fmin, fmax, self.FREQ_BINS + 1)
         centres = .5 * (f_edges[:-1] + f_edges[1:])
